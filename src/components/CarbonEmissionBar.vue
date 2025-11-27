@@ -169,6 +169,48 @@ export default {
       
       const { startYear, endYear, carbonEmissions } = this.chartData
       console.log('[CarbonEmissionBar] render: 渲染图表', { startYear, endYear, carbonEmissions })
+
+      // 将返回数据缩放到单位“万吨”后计算 y 轴的最小值和最大值
+      // 说明：按要求使用缩放因子 10e-4（等于 0.001）
+      const SCALE = 10e-4
+      let yMin = 0
+      let yMax = 0
+      let scaledSeries = []
+      try {
+        if (Array.isArray(carbonEmissions) && carbonEmissions.length > 0) {
+          // 可能包含非数值项，先过滤原始数值用于统计
+          const rawNums = carbonEmissions.map(v => Number(v)).filter(v => Number.isFinite(v))
+          const scaledNums = rawNums.map(n => n * SCALE)
+          if (scaledNums.length > 0) {
+            yMin = Math.min(...scaledNums)
+            yMax = Math.max(...scaledNums)
+
+            // 为了美观，给最小值和最大值各增加约 5% 的 padding
+            if (yMax === yMin) {
+              // 全部相等时，按值的 5% 扩展，若为 0 则设为 [0,1]
+              if (yMax === 0) {
+                yMin = 0
+                yMax = 1
+              } else {
+                const pad = Math.abs(yMax) * 0.05
+                yMin = yMin - pad
+                yMax = yMax + pad
+              }
+            } else {
+              const pad = (yMax - yMin) * 0.05
+              yMin = yMin - pad
+              yMax = yMax + pad
+            }
+          }
+          // 生成用于 series 的缩放数据（保持与原始数组相同长度）
+          scaledSeries = carbonEmissions.map(v => {
+            const n = Number(v)
+            return Number.isFinite(n) ? n * SCALE : 0
+          })
+        }
+      } catch (e) {
+        console.warn('[CarbonEmissionBar] 计算 y 轴范围失败，使用默认值', e)
+      }
       
       // 生成年份数组
       const years = []
@@ -219,6 +261,8 @@ export default {
         yAxis: {
           type: 'value',
           name: '万吨',
+          min: yMin,
+          max: yMax,
           nameTextStyle: { 
             color: '#aaddff', 
             fontSize: 12,
@@ -226,7 +270,14 @@ export default {
             padding: [0, 10, 0, 0]
           },
           axisLine: { show: false },
-          axisLabel: { color: '#aaddff' },
+          axisLabel: {
+            color: '#aaddff',
+            formatter: (value) => {
+              // 显示整数刻度，不保留小数
+              if (Number.isFinite(value)) return String(Math.round(value))
+              return value
+            }
+          },
           splitLine: { 
             lineStyle: { 
               color: 'rgba(75, 166, 240, 0.1)',
@@ -236,8 +287,8 @@ export default {
         },
         series: [{
           name: '碳排放量',
-          type: 'bar',
-          data: carbonEmissions,
+            type: 'bar',
+            data: (scaledSeries && scaledSeries.length) ? scaledSeries : (Array.isArray(carbonEmissions) ? carbonEmissions.map(v => { const n = Number(v); return Number.isFinite(n) ? n * SCALE : 0 }) : []),
           barMaxWidth: 24,
           itemStyle: {
             color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [

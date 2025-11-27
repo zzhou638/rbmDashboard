@@ -92,6 +92,10 @@ export default {
       const dataset = this.getDataset()
       const x = dataset.map(d => d && (d.name + ''))
       const y = dataset.map(d => d && Number(d.value))
+      // 计算 y 的最大值，用于决定格式化规则（小于 5 亿元时保留一位小数）
+      const validYs = y.filter(v => Number.isFinite(v))
+      const maxY = validYs.length ? Math.max(...validYs) : 0
+      const useOneDecimal = maxY < 5
       const techBlue = '#1e90ff'
 
       const option = {
@@ -102,7 +106,11 @@ export default {
           formatter: (params) => {
             const p = params && params[0]
             if (!p) return ''
-            return `${p.axisValueLabel}<br/>投资额：${p.data} 亿元`
+            const raw = p.data
+            const num = Number(raw)
+            if (!Number.isFinite(num)) return `${p.axisValueLabel}<br/>投资额：`
+            const display = useOneDecimal ? num.toFixed(1) : String(Math.round(num))
+            return `${p.axisValueLabel}<br/>投资额：${display} 亿元`
           }
         },
         // 留出少量安全边距以防标签溢出
@@ -123,7 +131,11 @@ export default {
           axisLabel: {
             color: '#ffffff',
             margin: 2,
-            formatter: (value) => (Number(value) === 0 ? '' : value)
+            formatter: (value) => {
+              const num = Number(value)
+              if (!Number.isFinite(num) || num === 0) return ''
+              return useOneDecimal ? Number(num).toFixed(1) : String(Math.round(num))
+            }
           },
           splitLine: { lineStyle: { color: 'rgba(255,255,255,0.12)' } }
         },

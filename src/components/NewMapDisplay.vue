@@ -8,7 +8,7 @@
     <CarbonEmissionCard ref="carbonCard" />
     
     <!-- 数据切换面板 -->
-    <div class="mode-switch-panel">
+    <div class="mode-switch-panel" :class="{ 'chat-open': isChatOpen }">
       <div class="mode-buttons">
         <div class="panel-glow"></div>
         <div class="panel-border"></div>
@@ -18,6 +18,23 @@
           <div class="mode-indicator"></div>
         </button>
       </div>
+    </div>
+    <!-- 地点图例（仅在 location 模式显示） -->
+    <div class="map-legend" :class="{ hidden: currentMode !== 'location' }">
+      <ul>
+        <li>
+          <span class="legend-dot dot-factory" aria-hidden="true"></span>
+          <span class="legend-label">工厂</span>
+        </li>
+        <li>
+          <span class="legend-dot dot-company" aria-hidden="true"></span>
+          <span class="legend-label">企业</span>
+        </li>
+        <li>
+          <span class="legend-dot dot-sampling" aria-hidden="true"></span>
+          <span class="legend-label">采样点</span>
+        </li>
+      </ul>
     </div>
   </div>
 </template>
@@ -37,25 +54,40 @@ export default {
     CarbonEmissionCard,
     CompanyInfoCard
   },
+  props: {
+    isChatOpen: {
+      type: Boolean,
+      default: false
+    }
+  },
   data() {
     return {
       map: null,
       mapLoaded: false, // 标记地图样式是否加载完成
       boundary: null,
       labelFeatures: null,
-      factoryData: null, // 工厂点数据
-      companyData: null, // 企业点数据
-      carbonPointLayerId: 'carbon-point',
+      allPointsData: null, // 所有点位数据
+      factoryData: null, // 工厂点数据（用于兼容）
+      companyData: null, // 企业点数据（用于兼容）
+      carbonData: null, // 采样点数据（用于兼容）
+
       blankStyle: null,
       currentMode: 'city', // 当前选中的模式
       currentScale: 'City',
       modes: [
         { value: 'city', label: '市级', scale: 'City' },
         { value: 'district', label: '区级', scale: 'District' },
-        { value: 'enterprise', label: '企业', scale: 'Companies' },
-        { value: 'factory', label: '工厂', scale: 'Factory' },
-        { value: 'carbon', label: '碳排放', scale: 'Carbon' }
+        { value: 'location', label: '地点', scale: 'Location' }
       ]
+    }
+  },
+  watch: {
+    isChatOpen() {
+      this.$nextTick(() => {
+        if (this.map) {
+          this.map.resize()
+        }
+      })
     }
   },
   mounted() {
@@ -86,10 +118,8 @@ export default {
 
     // 始终加载城市边界作为底图
     this.fetchBoundaryByScale('City')
-    // 同时加载工厂点数据
-    this.fetchFactoryData()
-    // 加载企业点数据
-    this.fetchCompanyData()
+    // 加载所有点位数据
+    this.fetchMapData()
   },
   beforeDestroy() {
     if (this.map) this.map.remove()
@@ -108,14 +138,12 @@ export default {
 
       map.on('load', () => {
         this.mapLoaded = true
-        // 先渲染企业点和工厂点（在底层）
-        if (this.companyData) {
-          this.renderCompanyPoints()
+        console.log('[Map] 地图加载完成')
+        // 渲染所有点位（统一图层，根据type动态设置颜色）
+        if (this.allPointsData) {
+          this.renderAllPoints()
         }
-        if (this.factoryData) {
-          this.renderFactoryPoints()
-        }
-        // 再渲染边界面（在上层）
+        // 渲染边界面（在点位上层）
         if (this.boundary) {
           this.renderBoundary()
         }
@@ -130,12 +158,9 @@ export default {
           this.labelFeatures = this.buildLabelPoints(res.data, scale)
           this.updateOverviewCounts(res.data)
           if (this.mapLoaded) {
-            // 确保企业点和工厂点在边界之前渲染
-            if (this.companyData && !this.map.getLayer('company-points')) {
-              this.renderCompanyPoints()
-            }
-            if (this.factoryData && !this.map.getLayer('factory-points')) {
-              this.renderFactoryPoints()
+            // 确保点位在边界之前渲染
+            if (this.allPointsData && !this.map.getLayer('all-points')) {
+              this.renderAllPoints()
             }
             this.renderBoundary()
           }
@@ -145,29 +170,69 @@ export default {
           this.labelFeatures = null
         })
     },
-    fetchFactoryData() {
-      http.get('map/gba_boundary', { params: { scale: 'Factory' } })
+    fetchMapData() {
+      console.log('[Map Data] 开始加载地图数据...')
+      
+      // 获取所有点位数据 - GET /api/map/data
+      http.get('map/data')
         .then(res => {
-          this.factoryData = res.data
+          const allData = res.data
+          console.log('[Map Data] 所有数据加载成功:', {
+            type: allData?.type,
+            totalFeatures: allData?.features?.length
+          })
+          
+          if (!allData || !allData.features) {
+            console.warn('[Map Data] 数据格式错误')
+            return
+          }
+          
+          // 保存完整的数据集
+          // 规范化 type 字段，兼容后端不同命名
+          try {
+            allData.features.forEach(f => {
+              if (!f || !f.properties) return
+              let t = f.properties.type
+              if (t == null) {
+                // 尝试常见备用字段
+                t = f.properties.type_name || f.properties.kind || f.properties.category || f.properties.TYPE || f.properties.Type
+              }
+              if (t != null) {
+                const s = String(t).toLowerCase()
+                if (s.includes('factory') || s.includes('工厂') || s.includes('厂')) {
+                  f.properties.type = 'factory'
+                } else if (s.includes('company') || s.includes('enterprise') || s.includes('企业') || s.includes('companyname')) {
+                  f.properties.type = 'company'
+                } else if (s.includes('sampling') || s.includes('sample') || s.includes('采样') || s.includes('samplingpoint') || s.includes('采样点')) {
+                  f.properties.type = 'samplingPoint'
+                } else {
+                  // 若无法识别，保留原始小写值以便后续调试
+                  f.properties.type = s
+                }
+              }
+            })
+          } catch (e) {
+            console.warn('[Map Data] 规范化 type 字段失败', e)
+          }
+
+          this.allPointsData = allData
+          
+          // 统计各类型数量
+          const typeCounts = {}
+          allData.features.forEach(feature => {
+            const type = feature.properties?.type || 'unknown'
+            typeCounts[type] = (typeCounts[type] || 0) + 1
+          })
+          
+          console.log('[Map Data] 点位类型统计:', typeCounts)
+          
+          // 如果地图已加载，立即渲染所有点位
           if (this.mapLoaded) {
-            this.renderFactoryPoints()
+            this.renderAllPoints()
           }
         })
         .catch(err => {
-          console.error('加载工厂数据失败:', err)
-        })
-    },
-    fetchCompanyData() {
-      http.get('companies/geojson')
-        .then(res => {
-          this.companyData = res.data
-          console.log('[Company] 企业数据加载成功:', this.companyData)
-          if (this.mapLoaded) {
-            this.renderCompanyPoints()
-          }
-        })
-        .catch(err => {
-          console.error('加载企业数据失败:', err)
+          console.error('[Map Data] 加载地图数据失败:', err)
         })
     },
     updateOverviewCounts(geojson) {
@@ -316,6 +381,13 @@ export default {
       const bbox = this.computeGeoJSONBounds(this.boundary)
       console.log('fitBounds bbox:', bbox)
       if (bbox) this.map.fitBounds(bbox, { padding: 40, duration: 0 })
+      
+      // 确保点图层始终在最顶层
+      if (this.map.getLayer('all-points')) {
+        this.map.moveLayer('all-points')
+        console.log('[Layer Order] 点图层已移至顶层')
+      }
+      
       // 绑定点击事件
       this.bindIdentify()
     },
@@ -361,75 +433,30 @@ export default {
       // 发送模式切换事件给 CarbonEmissionBar 组件
       bus.$emit('mode:switch', mode);
       
-      // 企业模式特殊处理：只控制企业点的显示/隐藏
-      if (mode === 'enterprise') {
+      // 地点模式：同时显示企业、工厂和碳排放点
+      if (mode === 'location') {
         // 确保城市边界显示
         if (!this.boundary) {
           this.fetchBoundaryByScale('City')
         }
-        // 隐藏工厂点
-        if (this.map.getLayer('factory-points')) {
-          this.map.setLayoutProperty('factory-points', 'visibility', 'none')
+        
+        // 显示所有点位
+        if (this.map.getLayer('all-points')) {
+          this.map.setLayoutProperty('all-points', 'visibility', 'visible')
+        } else if (this.allPointsData) {
+          this.renderAllPoints()
         }
-        // 显示企业点
-        if (this.map.getLayer('company-points')) {
-          this.map.setLayoutProperty('company-points', 'visibility', 'visible')
-          // 确保企业点位图层位于最顶层，避免被区/面图层覆盖
-          try { if (this.map.getLayer('company-points')) this.map.moveLayer('company-points') } catch (e) { console.warn('moveLayer company-points failed', e) }
-        } else if (this.companyData) {
-          this.renderCompanyPoints()
-        } else {
-          this.fetchCompanyData()
-        }
-        // 切换到企业模式时，移除碳点并关闭碳卡，避免残留
-        this.removeCarbonPoint()
-        this.$refs.carbonCard && this.$refs.carbonCard.close && this.$refs.carbonCard.close()
-      }
-      // 工厂模式特殊处理：只控制工厂点的显示/隐藏
-      else if (mode === 'factory') {
-        // 确保城市边界显示
-        if (!this.boundary) {
-          this.fetchBoundaryByScale('City')
-        }
-        // 隐藏企业点
-        if (this.map.getLayer('company-points')) {
-          this.map.setLayoutProperty('company-points', 'visibility', 'none')
-        }
-        // 显示工厂点
-        if (this.map.getLayer('factory-points')) {
-          this.map.setLayoutProperty('factory-points', 'visibility', 'visible')
-          // 确保工厂点位图层位于最顶层，避免被区/面图层覆盖
-          try { if (this.map.getLayer('factory-points')) this.map.moveLayer('factory-points') } catch (e) { console.warn('moveLayer factory-points failed', e) }
-        } else if (this.factoryData) {
-          this.renderFactoryPoints()
-        } else {
-          this.fetchFactoryData()
-        }
-        // 切换到工厂模式时，移除碳点并关闭碳卡，避免残留
-        this.removeCarbonPoint()
-        this.$refs.carbonCard && this.$refs.carbonCard.close && this.$refs.carbonCard.close()
-      } else if (mode === 'carbon') {
-        // 切换到碳排放：先隐藏企业/工厂点并关闭它们的卡片，避免与碳点叠加
-        if (this.map.getLayer('company-points')) {
-          this.map.setLayoutProperty('company-points', 'visibility', 'none')
-        }
-        if (this.map.getLayer('factory-points')) {
-          this.map.setLayoutProperty('factory-points', 'visibility', 'none')
-        }
-        this.$refs.companyCard && this.$refs.companyCard.close && this.$refs.companyCard.close()
-        this.$refs.factoryCard && this.$refs.factoryCard.close && this.$refs.factoryCard.close()
-        this.showCarbonPoint()
-        return
       } else {
-        // 其他模式：隐藏工厂点和企业点，更新边界
-        if (this.map.getLayer('factory-points')) {
-          this.map.setLayoutProperty('factory-points', 'visibility', 'none')
-        }
-        if (this.map.getLayer('company-points')) {
-          this.map.setLayoutProperty('company-points', 'visibility', 'none')
+        // 其他模式：隐藏所有点位，更新边界
+        if (this.map.getLayer('all-points')) {
+          this.map.setLayoutProperty('all-points', 'visibility', 'none')
         }
         this.fetchBoundaryByScale(scale)
-        this.removeCarbonPoint()
+        
+        // 关闭所有卡片
+        this.$refs.companyCard && this.$refs.companyCard.close && this.$refs.companyCard.close()
+        this.$refs.factoryCard && this.$refs.factoryCard.close && this.$refs.factoryCard.close()
+        this.$refs.carbonCard && this.$refs.carbonCard.close && this.$refs.carbonCard.close()
       }
     },
     // 点击事件，点击地图输出对应的属性
@@ -450,67 +477,42 @@ export default {
 
         // 根据当前模式决定查询哪些图层
         let features;
-        if (this.currentMode === 'carbon') {
-          features = this.map.queryRenderedFeatures(bbox, { layers: [this.carbonPointLayerId] })
-          if (features && features.length) {
-            console.log('[Map Identify - Carbon] 命中碳排放点')
-            const screenPos = this.getScreenPosition(px)
-            this.$refs.carbonCard && this.$refs.carbonCard.show(screenPos)
-          } else {
-            console.log('[Map Identify - Carbon] 未命中碳排放点')
-            this.$refs.carbonCard && this.$refs.carbonCard.close()
-          }
-          return
-        }
-
-        if (this.currentMode === 'enterprise') {
-          // 企业模式：仅查询企业点图层
-          features = this.map.queryRenderedFeatures(bbox, { layers: ['company-points'] });
+        if (this.currentMode === 'location') {
+          // 地点模式：查询所有点图层
           
-          if (features && features.length) {
-            const f = features[0];
-            console.log('[Map Identify - Company] 命中企业点:', f);
-            if (f && f.properties) {
-              console.log('[Map Identify - Company] 企业属性:', f.properties);
-              
-              // 获取 stock_name 并显示企业信息卡片
+          // 查询所有点位
+          const pointFeatures = this.map.queryRenderedFeatures(bbox, { layers: ['all-points'] });
+          if (pointFeatures && pointFeatures.length) {
+            const f = pointFeatures[0];
+            const pointType = f.properties?.type;
+            console.log('[Map Identify] 命中点位:', { type: pointType, properties: f.properties });
+            
+            // 根据点位类型显示对应的卡片
+            if (pointType === 'samplingPoint') {
+              const screenPos = this.getScreenPosition(px)
+              this.$refs.carbonCard && this.$refs.carbonCard.show && this.$refs.carbonCard.show(f.properties, screenPos.x, screenPos.y)
+              return
+            } else if (pointType === 'company') {
               const stockName = f.properties.stock_name || f.properties.stockName || f.properties.stock_code;
               if (stockName) {
-                console.log('[Map Identify - Company] stockName:', stockName);
                 this.$refs.companyCard.show(stockName);
-              } else {
-                console.warn('[Map Identify - Company] 未找到 stock_name 字段，可用字段:', Object.keys(f.properties));
+                return
               }
-            }
-          } else {
-            console.log('[Map Identify - Company] 未命中企业点');
-          }
-        } else if (this.currentMode === 'factory') {
-          // 工厂模式：仅查询工厂点图层
-          features = this.map.queryRenderedFeatures(bbox, { layers: ['factory-points'] });
-          
-          if (features && features.length) {
-            const f = features[0];
-            console.log('[Map Identify - Factory] 命中工厂点:', f);
-            if (f && f.properties) {
-              console.log('[Map Identify - Factory] 工厂属性:', f.properties);
-              
-              // 获取 factoryUuid 并显示工厂信息卡片
-              // GeoJSON 中字段名为 factory_uu
-              const factoryUuid = f.properties.factory_uu || f.properties.factoryUuid || f.properties.factory_uuid;
+            } else if (pointType === 'factory') {
+              const factoryUuid = f.properties.factory_uu || f.properties.factoryUuid || f.properties.factory_uuid || f.properties.uuid;
               if (factoryUuid) {
-                console.log('[Map Identify - Factory] factoryUuid:', factoryUuid);
                 this.$refs.factoryCard.show(factoryUuid);
-              } else {
-                console.warn('[Map Identify - Factory] 未找到 factory_uu 字段，可用字段:', Object.keys(f.properties));
+                return
               }
             }
-          } else {
-            console.log('[Map Identify - Factory] 未命中工厂点');
           }
+
+          // 如果都没命中，可以考虑关闭卡片（可选，或者点击空白处关闭）
+          // this.$refs.carbonCard && this.$refs.carbonCard.close()
+          // this.$refs.companyCard && this.$refs.companyCard.close()
+          // this.$refs.factoryCard && this.$refs.factoryCard.close()
         } else {
           // 市级和区级模式：查询面图层
-          this.$refs.carbonCard && this.$refs.carbonCard.close()
           features = this.map.queryRenderedFeatures(bbox, { layers: ['gba-fill', 'gba-line'] });
 
           if (features && features.length) {
@@ -737,11 +739,91 @@ export default {
       }
       return { x: px.x, y: px.y };
     },
+    renderAllPoints() {
+      if (!this.map || !this.allPointsData) {
+        console.log('[All Points Render] 跳过: map=', !!this.map, 'data=', !!this.allPointsData)
+        return;
+      }
+      
+      const sourceId = 'all-points-source'
+      const layerId = 'all-points'
+      
+      console.log('[All Points Render] 开始渲染:', {
+        featureCount: this.allPointsData?.features?.length
+      })
+      
+      // 删除旧的图层和源
+      if (this.map.getLayer(layerId)) {
+        this.map.removeLayer(layerId)
+      }
+      if (this.map.getSource(sourceId)) {
+        this.map.removeSource(sourceId)
+      }
+      
+      // 添加所有点位数据源
+      this.map.addSource(sourceId, {
+        type: 'geojson',
+        data: this.allPointsData
+      })
+      
+      // 添加统一点图层 - 根据type字段动态设置颜色
+      this.map.addLayer({
+        id: layerId,
+        type: 'circle',
+        source: sourceId,
+        paint: {
+          // 根据type字段设置不同半径
+          'circle-radius': 4,
+          // 根据type字段设置不同颜色
+          'circle-color': [
+            'match',
+            ['get', 'type'],
+            'factory', '#FF4D4F',      // 工厂: 红色
+            'company', '#FADB14',      // 公司: 黄色
+            'samplingPoint', '#52C41A', // 采样点: 绿色
+            '#999999'                   // 默认: 灰色
+          ],
+          'circle-opacity': 0.95,
+          'circle-stroke-width': [
+            'match',
+            ['get', 'type'],
+            'factory', 1,
+            'company', 1.5,
+            'samplingPoint', 2,
+            1.5
+          ],
+          'circle-stroke-color': '#ffffff',
+          'circle-stroke-opacity': 0.9
+        },
+        layout: {
+          'visibility': this.currentMode === 'location' ? 'visible' : 'none'
+        }
+      })
+      
+      // 确保点图层在所有图层的最顶层
+      this.map.moveLayer(layerId)
+      
+      // 确认图层成功添加
+      const layerExists = this.map.getLayer(layerId)
+      console.log('[All Points] 所有点位图层添加完成:', {
+        layerExists: !!layerExists,
+        visibility: this.map.getLayoutProperty(layerId, 'visibility'),
+        movedToTop: true
+      })
+    },
     renderFactoryPoints() {
-      if (!this.map || !this.factoryData) return;
+      if (!this.map || !this.factoryData) {
+        console.log('[Factory Render] 跳过: map=', !!this.map, 'data=', !!this.factoryData)
+        return;
+      }
       
       const sourceId = 'factory-source'
       const layerId = 'factory-points'
+      
+      console.log('[Factory Render] 开始渲染:', {
+        featureCount: this.factoryData?.features?.length,
+        firstFeature: this.factoryData?.features?.[0]
+      })
       
       // 删除旧的图层和源
       if (this.map.getLayer(layerId)) {
@@ -757,32 +839,46 @@ export default {
         data: this.factoryData
       })
       
-      // 添加工厂点图层
+      // 添加工厂点图层 - 使用红色（底层，最小）
       this.map.addLayer({
         id: layerId,
         type: 'circle',
         source: sourceId,
         paint: {
-          'circle-radius': 3,
-          'circle-color': '#ff6b35',
-          'circle-opacity': 0.8,
+          'circle-radius': 4,
+          'circle-color': '#FF4D4F', // 红色
+          'circle-opacity': 0.95,
           'circle-stroke-width': 1,
           'circle-stroke-color': '#ffffff',
           'circle-stroke-opacity': 0.8
         },
         layout: {
-          'visibility': this.currentMode === 'factory' ? 'visible' : 'none'
+          'visibility': this.currentMode === 'location' ? 'visible' : 'none'
         }
       })
-      // 确保工厂点在最上层
-      try { if (this.map.getLayer(layerId)) this.map.moveLayer(layerId) } catch (e) { console.warn('moveLayer factory-points failed', e) }
-      console.log('[Factory] 工厂点数据已渲染')
+      
+      // 确认图层成功添加
+      const layerExists = this.map.getLayer(layerId)
+      const layerStyle = layerExists ? this.map.getPaintProperty(layerId, 'circle-color') : null
+      console.log('[Factory] 工厂点图层添加完成:', {
+        layerExists: !!layerExists,
+        layerColor: layerStyle,
+        visibility: this.map.getLayoutProperty(layerId, 'visibility')
+      })
     },
     renderCompanyPoints() {
-      if (!this.map || !this.companyData) return;
+      if (!this.map || !this.companyData) {
+        console.log('[Company Render] 跳过: map=', !!this.map, 'data=', !!this.companyData)
+        return;
+      }
       
       const sourceId = 'company-source'
       const layerId = 'company-points'
+      
+      console.log('[Company Render] 开始渲染:', {
+        featureCount: this.companyData?.features?.length,
+        firstFeature: this.companyData?.features?.[0]
+      })
       
       // 删除旧的图层和源
       if (this.map.getLayer(layerId)) {
@@ -798,94 +894,87 @@ export default {
         data: this.companyData
       })
       
-      // 添加企业点图层
+      // 添加企业点图层 - 使用黄色（中层，中等大小）
       this.map.addLayer({
         id: layerId,
         type: 'circle',
         source: sourceId,
         paint: {
-          'circle-radius': 4,
-          'circle-color': '#00f2ff',
-          'circle-opacity': 0.85,
+          'circle-radius': 5,
+          'circle-color': '#FADB14', // 黄色
+          'circle-opacity': 0.95,
           'circle-stroke-width': 1.5,
           'circle-stroke-color': '#ffffff',
           'circle-stroke-opacity': 0.9
         },
         layout: {
-          'visibility': this.currentMode === 'enterprise' ? 'visible' : 'none'
+          'visibility': this.currentMode === 'location' ? 'visible' : 'none'
         }
       })
-      // 确保企业点在最上层
-      try { if (this.map.getLayer(layerId)) this.map.moveLayer(layerId) } catch (e) { console.warn('moveLayer company-points failed', e) }
-      console.log('[Company] 企业点数据已渲染')
-    },
-    showCarbonPoint() {
-      if (!this.map) return
-      const sourceId = 'carbon-source'
-      const layerId = this.carbonPointLayerId
-      // 切换到碳排放点时，确保关闭企业/工厂卡片并隐藏它们的图层
-      this.$refs.companyCard && this.$refs.companyCard.close && this.$refs.companyCard.close()
-      this.$refs.factoryCard && this.$refs.factoryCard.close && this.$refs.factoryCard.close()
-      if (this.map.getLayer('company-points')) {
-        this.map.setLayoutProperty('company-points', 'visibility', 'none')
-      }
-      if (this.map.getLayer('factory-points')) {
-        this.map.setLayoutProperty('factory-points', 'visibility', 'none')
-      }
-      this.$refs.carbonCard && this.$refs.carbonCard.close()
-      const carbonFeature = {
-        type: 'FeatureCollection',
-        features: [{
-          type: 'Feature',
-          properties: { name: '碳排放监测点' },
-          geometry: {
-            type: 'Point',
-            coordinates: [113.5721821, 22.7860305]
-          }
-        }]
-      }
-      if (this.map.getLayer(layerId)) {
-        this.map.getSource(sourceId)?.setData(carbonFeature)
-        this.map.setLayoutProperty(layerId, 'visibility', 'visible')
-        return
-      }
-      if (this.map.getSource(sourceId)) {
-        this.map.removeSource(sourceId)
-      }
-      this.map.addSource(sourceId, {
-        type: 'geojson',
-        data: carbonFeature
-      })
-      this.map.addLayer({
-        id: layerId,
-        type: 'circle',
-        source: sourceId,
-        paint: {
-          'circle-radius': 8,
-          'circle-color': '#34D399',
-          'circle-opacity': 0.9,
-          'circle-stroke-width': 2,
-          'circle-stroke-color': '#FFFFFF',
-          'circle-stroke-opacity': 0.9
-        }
-      })
-      this.map.flyTo({
-        center: [113.5721821, 22.7860305],
-        zoom: 11,
-        speed: 0.8
+      
+      // 确认图层成功添加
+      const layerExists = this.map.getLayer(layerId)
+      const layerStyle = layerExists ? this.map.getPaintProperty(layerId, 'circle-color') : null
+      console.log('[Company] 企业点图层添加完成:', {
+        layerExists: !!layerExists,
+        layerColor: layerStyle,
+        visibility: this.map.getLayoutProperty(layerId, 'visibility')
       })
     },
-    removeCarbonPoint() {
-      if (!this.map) return
+    renderCarbonPoints() {
+      if (!this.map || !this.carbonData) {
+        console.log('[Carbon Render] 跳过: map=', !!this.map, 'data=', !!this.carbonData)
+        return;
+      }
+      
       const sourceId = 'carbon-source'
-      const layerId = this.carbonPointLayerId
-      this.$refs.carbonCard && this.$refs.carbonCard.close()
+      const layerId = 'carbon-points'
+      
+      console.log('[Carbon Render] 开始渲染:', {
+        featureCount: this.carbonData?.features?.length,
+        firstFeature: this.carbonData?.features?.[0]
+      })
+      
+      // 删除旧的图层和源
       if (this.map.getLayer(layerId)) {
         this.map.removeLayer(layerId)
       }
       if (this.map.getSource(sourceId)) {
         this.map.removeSource(sourceId)
       }
+      
+      // 添加采样点数据源
+      this.map.addSource(sourceId, {
+        type: 'geojson',
+        data: this.carbonData
+      })
+      
+      // 添加采样点图层 - 使用绿色（顶层，最大）
+      this.map.addLayer({
+        id: layerId,
+        type: 'circle',
+        source: sourceId,
+        paint: {
+          'circle-radius': 6,
+          'circle-color': '#52C41A', // 绿色
+          'circle-opacity': 0.95,
+          'circle-stroke-width': 2,
+          'circle-stroke-color': '#ffffff',
+          'circle-stroke-opacity': 0.95
+        },
+        layout: {
+          'visibility': this.currentMode === 'location' ? 'visible' : 'none'
+        }
+      })
+      
+      // 确认图层成功添加
+      const layerExists = this.map.getLayer(layerId)
+      const layerStyle = layerExists ? this.map.getPaintProperty(layerId, 'circle-color') : null
+      console.log('[Carbon] 采样点图层添加完成:', {
+        layerExists: !!layerExists,
+        layerColor: layerStyle,
+        visibility: this.map.getLayoutProperty(layerId, 'visibility')
+      })
     }
   }
 }
@@ -921,9 +1010,15 @@ export default {
   right: 20px;
   /* transform: translateX(-50%); */
   z-index: 1000;
-  background: transparent;
+  /* 改为不透明背景，避免地图透出 */
+  background: rgba(2, 6, 15, 0.98);
   padding: 0;
+  transition: bottom 0.3s ease;
 }
+
+/* .mode-switch-panel.chat-open {
+  bottom: 55%; 
+} */
 
 @keyframes glow-pulse {
 
@@ -943,7 +1038,8 @@ export default {
   gap: 0;
   border-radius: 12px;
   overflow: hidden;
-  background: rgba(0, 30, 60, 0.3);
+  /* 全不透明面板背景 */
+  background: rgba(0, 30, 60, 1);
   border: 1px solid rgba(102, 221, 255, 0.2);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), inset 0 0 24px rgba(0, 200, 255, 0.08);
 }
@@ -1074,4 +1170,46 @@ export default {
   opacity: 1;
   transform: scaleX(1);
 }
+
+/* 简洁图例，匹配地图风格，放在左下角，仅在地点模式可见 */
+.map-legend {
+  position: absolute;
+  left: 0px;
+  bottom: 0px;
+  z-index: 1000;
+  background: rgba(2, 6, 15);
+  border: 1px solid rgba(102, 221, 255, 0.06);
+  padding: 8px 10px;
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.5), inset 0 0 18px rgba(0,150,255,0.03);
+  color: #e6f7ff;
+  font-size: 13px;
+  user-select: none;
+}
+.map-legend ul {
+  display: flex;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  align-items: center;
+}
+.map-legend li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.legend-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: inline-block;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+  border: 1px solid rgba(255,255,255,0.9);
+}
+.dot-factory { background: #FF4D4F; box-shadow: 0 2px 10px rgba(255,77,79,0.25); }
+.dot-company { background: #FADB14; box-shadow: 0 2px 10px rgba(250,219,20,0.18); }
+.dot-sampling { background: #52C41A; box-shadow: 0 2px 10px rgba(82,196,26,0.18); }
+.legend-label { color: #cfeeff; font-weight: 500; font-size: 13px;}
+.map-legend.hidden { display: none; }
 </style>

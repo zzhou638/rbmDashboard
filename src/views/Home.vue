@@ -83,7 +83,7 @@
           <div class="map-container">
             <div class="map-content">
               <div class="map-viewport">
-                <NewMapDisplay :geojsonUrl="gbaGeojsonUrl" />
+                <NewMapDisplay :geojsonUrl="gbaGeojsonUrl" :isChatOpen="showChatPanel" />
               </div>
               <!-- 聊天面板：紧贴输入框上方展开 -->
               <div v-if="showChatPanel" class="chat-panel">
@@ -93,7 +93,7 @@
                 </div>
                 <div class="chat-messages" ref="chatMessages">
                   <div v-for="(m, i) in chatMessages" :key="i" class="chat-message" :class="m.role">
-                    <div class="bubble">{{ m.content }}</div>
+                    <div class="bubble" v-html="renderMarkdown(m.content)"></div>
                   </div>
                 </div>
               </div>
@@ -146,6 +146,7 @@ import CarbonEmissionBar from '@/components/CarbonEmissionBar.vue'
 import AverageTemperatureLine from '@/components/AverageTemperatureLine.vue'
 import EsgReportCard from '@/components/EsgReportCard.vue'
 import GreenFinanceInvestimentTrend from '@/components/GreenFinanceInvestimentTrend.vue'
+import axios from 'axios'
 export default {
   name: 'HomePage',
   components: {
@@ -225,28 +226,122 @@ export default {
   methods: {
     onSendChat() {
       if (!this.chatInput || !this.chatInput.trim()) return
-      // 暂时先控制台输出，后续可对接 AI Agent
-      try { console.log('[AI Chat]', this.chatInput) } catch (e) { /* ignore */ }
-      const userMsg = { role: 'user', content: this.chatInput.trim() }
+      const text = this.chatInput.trim()
+      const userMsg = { role: 'user', content: text }
+      // push user message and clear input
+      this.chatMessages.push(userMsg)
       this.chatInput = ''
       this.showChatPanel = true
-      this.chatMessages.push(userMsg)
       this.$nextTick(() => this.scrollChatToBottom())
-      // 模拟 AI 回复
-      setTimeout(() => {
-        const reply = {
-          role: 'assistant',
-          content: `这是对“${userMsg.content}”的示例回答。后续可以接入真实 AI Agent。`
-        }
-        this.chatMessages.push(reply)
-        this.$nextTick(() => this.scrollChatToBottom())
-      }, 600)
+
+      // 显示临时占位回复
+      const placeholder = { role: 'assistant', content: '正在思考中...' }
+      this.chatMessages.push(placeholder)
+      this.$nextTick(() => this.scrollChatToBottom())
+
+      // 发送到指定 AI Agent 接口
+      axios.post('http://10.4.183.186:8000/api/agent', { query: text }, { timeout: 300000 })
+        .then(res => {
+          // 移除占位回复并推入真实回复
+          const idx = this.chatMessages.indexOf(placeholder)
+          if (idx !== -1) this.chatMessages.splice(idx, 1)
+
+          let replyText = ''
+          const payload = res?.data
+          if (!payload) {
+            replyText = 'AI Agent 未返回内容。'
+          } else if (typeof payload === 'string') {
+            replyText = payload
+          } else if (payload.answer) {
+            replyText = payload.answer
+          } else if (payload.reply) {
+            replyText = payload.reply
+          } else if (payload.data && (payload.data.answer || payload.data.reply)) {
+            replyText = payload.data.answer || payload.data.reply
+          } else if (payload.message) {
+            replyText = payload.message
+          } else {
+            replyText = JSON.stringify(payload)
+          }
+
+          this.chatMessages.push({ role: 'assistant', content: replyText })
+          this.$nextTick(() => this.scrollChatToBottom())
+        })
+        .catch(err => {
+          const idx = this.chatMessages.indexOf(placeholder)
+          if (idx !== -1) this.chatMessages.splice(idx, 1)
+          const errMsg = err?.response?.data?.error || err.message || '请求 AI Agent 失败'
+          this.chatMessages.push({ role: 'assistant', content: `错误：${errMsg}` })
+          this.$nextTick(() => this.scrollChatToBottom())
+          console.error('[AI Agent] 请求失败:', err)
+        })
     },
     scrollChatToBottom() {
       const box = this.$refs.chatMessages
       if (box) {
         try { box.scrollTop = box.scrollHeight } catch (e) { /* ignore */ }
       }
+    },
+    escapeHtml(str) {
+      if (str === null || str === undefined) return ''
+      return String(str).replace(/[&<>"']/g, function (s) {
+        return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[s]
+      })
+    },
+    renderMarkdown(raw) {
+      if (!raw && raw !== 0) return ''
+      let s = String(raw)
+      // 防止 HTML 注入：先转义
+      s = this.escapeHtml(s)
+
+      // 行内代码 `code`
+      s = s.replace(/`([^`]+?)`/g, '<code>$1</code>')
+
+      // 加粗 **bold**
+      s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+
+      // 标题 #, ##, ###
+      s = s.replace(/^###\s+(.*)$/gm, '<h3>$1</h3>')
+      s = s.replace(/^##\s+(.*)$/gm, '<h2>$1</h2>')
+      s = s.replace(/^#\s+(.*)$/gm, '<h1>$1</h1>')
+
+      // 将按行处理列表和段落
+      const lines = s.split(/\r?\n/)
+      let out = ''
+      let inUl = false
+      let inOl = false
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i]
+        if (/^\s*[-*]\s+/.test(line)) {
+          if (inOl) { out += '</ol>'; inOl = false }
+          if (!inUl) { out += '<ul>'; inUl = true }
+          out += '<li>' + line.replace(/^\s*[-*]\s+/, '') + '</li>'
+          continue
+        }
+        if (/^\s*\d+\.\s+/.test(line)) {
+          if (inUl) { out += '</ul>'; inUl = false }
+          if (!inOl) { out += '<ol>'; inOl = true }
+          out += '<li>' + line.replace(/^\s*\d+\.\s+/, '') + '</li>'
+          continue
+        }
+        // 空行 -> 段落分隔
+        if (line.trim() === '') {
+          if (inUl) { out += '</ul>'; inUl = false }
+          if (inOl) { out += '</ol>'; inOl = false }
+          out += ''
+          continue
+        }
+        // 非列表、非标题的普通行，包成段落
+        if (!/^<h[1-3]>/i.test(line)) {
+          out += '<p>' + line + '</p>'
+        } else {
+          out += line
+        }
+      }
+      if (inUl) out += '</ul>'
+      if (inOl) out += '</ol>'
+
+      return out
     },
     closeChatPanel() {
       this.showChatPanel = false
@@ -593,20 +688,23 @@ export default {
 
 /* 浮动 AI 聊天面板 */
 .chat-panel {
-  flex: 0 0 220px;
+  flex: 0 0 40%; /* 占据 40% 高度，挤压上方地图 */
+  max-height: 40%; /* 强制最大高度，防止内容撑开 */
   margin: 0 10px 10px 10px;
-  width: auto;
-  max-height: 40%;
-  background: rgba(0, 0, 0, 0.65);
+  background: #000000;
   border: 1px solid rgba(102, 221, 255, 0.35);
   border-radius: 6px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
   display: flex;
   flex-direction: column;
+  min-height: 0; /* 防止 flex 子项溢出 */
+  z-index: 10;
+  overflow: hidden; /* 确保内容不会撑开容器 */
 }
 
 .chat-panel-header {
   height: 40px;
+  flex-shrink: 0; /* 防止头部被压缩 */
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -628,9 +726,10 @@ export default {
 }
 
 .chat-messages {
-  flex: 1;
+  flex: 1 1 0; /* 关键：设置 flex-basis 为 0，强制滚动 */
   overflow-y: auto;
   padding: 10px;
+  min-height: 0;
 }
 
 .chat-message { display: flex; margin-bottom: 10px; }
@@ -643,20 +742,24 @@ export default {
   font-size: 13px;
   line-height: 1.4;
   color: #e7f7ff;
+  word-break: break-word;
 }
 .chat-message.user .bubble {
   background: rgba(30, 144, 255, 0.25);
   border: 1px solid rgba(30, 144, 255, 0.4);
+  text-align: right;
 }
 .chat-message.assistant .bubble {
   background: rgba(102, 221, 255, 0.15);
   border: 1px solid rgba(102, 221, 255, 0.35);
+  text-align: left;
 }
 
 /* 地图可视区域：高度略缩小，四周 10px 间距 */
 .map-viewport {
   flex: 1 1 auto;
   height: auto;
+  min-height: 0; /* 关键：允许 flex 子项收缩 */
   margin: 10px;
   border-radius: 4px;
   overflow: hidden;
@@ -674,6 +777,7 @@ export default {
   border-radius: 4px;
   padding: 8px 10px;
   box-sizing: border-box;
+  z-index: 10;
 }
 
 .chat-input {
@@ -1308,5 +1412,59 @@ export default {
   .top-metrics {
     grid-template-columns: 1fr;
   }
+}
+</style>
+
+<style>
+/* Markdown 内容样式修复 - 全局样式 (非 scoped) 以避免 ::v-deep 问题 */
+.chat-message .bubble ul,
+.chat-message .bubble ol {
+  margin: 5px 0 10px 0;
+  padding-left: 24px;
+  list-style-position: outside;
+}
+
+.chat-message .bubble ul {
+  list-style-type: disc;
+}
+
+.chat-message .bubble ol {
+  list-style-type: decimal;
+}
+
+.chat-message .bubble li {
+  margin-bottom: 4px;
+  line-height: 1.5;
+}
+
+.chat-message .bubble p {
+  margin: 0 0 8px 0;
+}
+
+.chat-message .bubble p:last-child {
+  margin-bottom: 0;
+}
+
+.chat-message .bubble h1,
+.chat-message .bubble h2,
+.chat-message .bubble h3 {
+  margin: 12px 0 6px 0;
+  font-weight: bold;
+  font-size: 1.1em;
+  line-height: 1.3;
+  color: #fff;
+}
+
+.chat-message .bubble strong {
+  font-weight: bold;
+  color: #fff;
+}
+
+.chat-message .bubble code {
+  background: rgba(0, 0, 0, 0.3);
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-family: monospace;
+  color: #ffeb3b;
 }
 </style>

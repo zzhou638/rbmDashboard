@@ -169,6 +169,40 @@ export default {
       
       const { startYear, endYear, temperatures } = this.chartData
       console.log('[AverageTemperatureLine] render: 渲染图表', { startYear, endYear, temperatures })
+      // 计算 y 轴最小值和最大值，并添加约 5% 的 padding
+      let yMin = 0
+      let yMax = 0
+      let yInterval = null
+      try {
+        if (Array.isArray(temperatures) && temperatures.length > 0) {
+          const nums = temperatures.map(v => Number(v)).filter(v => Number.isFinite(v))
+          if (nums.length > 0) {
+            yMin = Math.min(...nums)
+            yMax = Math.max(...nums)
+            if (yMax === yMin) {
+              if (yMax === 0) {
+                yMin = 0
+                yMax = 1
+              } else {
+                const pad = Math.abs(yMax) * 0.05
+                yMin = yMin - pad
+                yMax = yMax + pad
+              }
+            } else {
+              const pad = (yMax - yMin) * 0.05
+              yMin = yMin - pad
+              yMax = yMax + pad
+            }
+
+            // 如果范围过小，设置步长为 0.1
+            if ((yMax - yMin) < 1) {
+              yInterval = 0.1
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('[AverageTemperatureLine] 计算 y 轴范围失败', e)
+      }
       
       // 生成年份数组
       const years = []
@@ -178,10 +212,11 @@ export default {
 
       const option = {
         backgroundColor: 'transparent',
+        // 增加右侧和底部安全边距，避免最后一个 x 轴标签或点被裁切
         grid: { 
           left: '2%', 
-          right: '2%', 
-          bottom: '5%', 
+          right: '6%', 
+          bottom: '8%', 
           top: '18%', 
           containLabel: true 
         },
@@ -214,13 +249,16 @@ export default {
           axisLabel: { 
             color: '#aaddff',
             fontSize: 12,
-            margin: 12
+            margin: 14
           },
           axisTick: { show: false }
         },
         yAxis: {
           type: 'value',
           name: '°C',
+          min: yMin,
+          max: yMax,
+          interval: yInterval,
           nameTextStyle: { 
             color: '#aaddff', 
             fontSize: 12,
@@ -228,7 +266,14 @@ export default {
             padding: [0, 10, 0, 0]
           },
           axisLine: { show: false },
-          axisLabel: { color: '#aaddff' },
+          axisLabel: {
+            color: '#aaddff',
+            formatter: (value) => {
+              // 保留一位小数
+              if (Number.isFinite(value)) return Number(value).toFixed(1)
+              return value
+            }
+          },
           splitLine: { 
             lineStyle: { 
               color: 'rgba(75, 166, 240, 0.1)',
@@ -276,11 +321,12 @@ export default {
 
 <style scoped>
 .avg-temp-line {
-  width: 100%;
-  height: 100%;
-  position: relative;
-  padding-top: 38px;
-  box-sizing: border-box;
+   width: 100%;
+   height: 100%;
+   position: relative;
+   padding-top: 38px;
+   box-sizing: border-box;
+   margin: 0 auto;
 }
 
 .card_title {
