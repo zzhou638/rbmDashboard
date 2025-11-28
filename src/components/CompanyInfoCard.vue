@@ -117,6 +117,13 @@
             <span class="label">备注</span>
             <span class="value">{{ companyInfo.remark }}</span>
           </div>
+          
+          <!-- ESG 趋势图 -->
+          <div class="info-item full-width chart-section">
+            <div class="divider"></div>
+            <h4 class="section-title">ESG 评分历史</h4>
+            <ESGHistoryChart :stock-name="companyInfo.stockName" />
+          </div>
         </div>
       </div>
     </div>
@@ -125,9 +132,13 @@
 
 <script>
 import { http } from '@/api/api'
+import ESGHistoryChart from './ESGHistoryChart.vue'
 
 export default {
   name: 'CompanyInfoCard',
+  components: {
+    ESGHistoryChart
+  },
   data() {
     return {
       visible: false,
@@ -473,5 +484,24 @@ export default {
   .company-name {
     font-size: 18px;
   }
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  color: #00f2ff;
+  font-size: 18px;
+  margin: 20px 0 12px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-shadow: 0 0 10px rgba(0, 242, 255, 0.5);
+  background: linear-gradient(90deg, rgba(0, 242, 255, 0.1), transparent);
+  padding: 8px 12px;
+  border-left: 4px solid #00f2ff;
+  border-radius: 0 4px 4px 0;
+}
+
+.chart-section {
+  margin-top: 10px;
 }
 </style>

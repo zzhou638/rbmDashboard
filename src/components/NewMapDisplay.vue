@@ -70,6 +70,12 @@ export default {
       factoryData: null, // 工厂点数据（用于兼容）
       companyData: null, // 企业点数据（用于兼容）
       carbonData: null, // 采样点数据（用于兼容）
+      buildingData: null, // 建筑物数据
+      is3DMode: false, // 是否处于3D建筑物模式
+      buildingMarkers: [], // 建筑物标签标记数组 (deprecated, using visibleMarkers map now)
+      visibleMarkers: new Map(), // 当前显示的标记 Map<featureId, Marker>
+      maxVisibleMarkers: 10, // 最大显示数量
+
 
       blankStyle: null,
       currentMode: 'city', // 当前选中的模式
@@ -97,7 +103,13 @@ export default {
       name: 'blank',
       glyphs: "mapbox://fonts/mapbox/{fontstack}/{range}.pbf", // 需要有效 token
       sources: {},
-
+      // 光照配置 - fill-extrusion 图层必需
+      light: {
+        anchor: 'viewport',
+        color: '#ffffff',
+        intensity: 0.4,
+        position: [1.5, 90, 80]
+      },
       layers: [
         {
           id: 'background',
@@ -116,13 +128,17 @@ export default {
       setTimeout(() => { if (this.map) this.map.resize() }, 0)
     })
 
-    // 始终加载城市边界作为底图
+    // 恢复加载边界和点位数据
     this.fetchBoundaryByScale('City')
-    // 加载所有点位数据
     this.fetchMapData()
+    // 加载建筑物数据
+    this.fetchBuildingData()
   },
   beforeDestroy() {
-    if (this.map) this.map.remove()
+    this.clearBuildingMarkers()
+    if (this.map) {
+      this.map.remove()
+    }
   },
   methods: {
     initMap() {
@@ -133,7 +149,10 @@ export default {
         // style: 'mapbox://styles/mapbox/dark-v11',
         style: this.blankStyle,
         center: [113.45, 23.17],
-        zoom: 10
+        zoom: 9, // 初始视角稍微拉远一点，看全大湾区
+        pitch: 0, // 初始 2D 视角
+        bearing: 0, // 地图旋转角度
+        maxPitch: 85 // 允许更大的倾斜角度
       })
 
       map.on('load', () => {
@@ -146,6 +165,10 @@ export default {
         // 渲染边界面（在点位上层）
         if (this.boundary) {
           this.renderBoundary()
+        }
+        // 渲染建筑物（如果有数据）
+        if (this.buildingData) {
+          this.renderBuildings()
         }
       })
       this.$nextTick(() => setTimeout(() => map.resize(), 0))
@@ -234,6 +257,186 @@ export default {
         .catch(err => {
           console.error('[Map Data] 加载地图数据失败:', err)
         })
+    },
+    fetchBuildingData() {
+      console.log('[Building Data] 开始加载建筑物数据...')
+      http.get('map/company-buildings')
+        .then(res => {
+          this.buildingData = res.data
+          console.log('[Building Data] 建筑物数据加载成功, feature count:', this.buildingData?.features?.length)
+          if (this.buildingData?.features?.length > 0) {
+             console.log('[Building Data] Sample feature:', this.buildingData.features[0])
+             console.log('[Building Data] Sample properties:', this.buildingData.features[0].properties)
+             console.log('[Building Data] Sample geometry type:', this.buildingData.features[0].geometry?.type)
+          }
+          
+          // 数据加载完成后，如果是3D模式则渲染
+          console.log('[Building Data] mapLoaded:', this.mapLoaded, 'currentMode:', this.currentMode, 'is3DMode:', this.is3DMode)
+          if (this.mapLoaded && this.is3DMode) {
+            console.log('[Building Data] 地图已加载且处于3D模式，渲染建筑物...')
+            this.renderBuildings()
+          } else {
+            console.log('[Building Data] 数据已加载，但未处于3D模式或地图未加载，暂不渲染')
+          }
+        })
+        .catch(err => {
+          console.error('[Building Data] 加载建筑物数据失败:', err)
+        })
+    },
+    renderBuildings() {
+      console.log('[Render Buildings] Called, checking conditions...')
+      
+      if (!this.map) return
+      if (!this.buildingData || !this.buildingData.features || this.buildingData.features.length === 0) {
+        console.log('[Render Buildings] buildingData is null or empty, aborting')
+        return
+      }
+      
+      const sourceId = 'buildings-source'
+      const layerId = 'buildings-layer'
+
+      // 1. 确保光照设置 (Crucial for 3D rendering)
+      if (this.map.style) {
+        // 即使有光照配置，也强制重置一下，确保参数正确
+        this.map.setLight({
+          anchor: 'viewport',
+          color: '#ffffff',
+          intensity: 0.4,
+          position: [1.5, 90, 80]
+        })
+      }
+
+      try {
+        // 2. 处理数据源
+        const source = this.map.getSource(sourceId)
+        if (source) {
+          console.log('[Render Buildings] Updating existing source data')
+          source.setData(this.buildingData)
+        } else {
+          console.log('[Render Buildings] Adding new source')
+          this.map.addSource(sourceId, {
+            type: 'geojson',
+            data: this.buildingData
+          })
+        }
+
+        // 3. 处理图层
+        const heightMultiplier = 8
+        if (this.map.getLayer(layerId)) {
+          console.log('[Render Buildings] Layer exists, ensuring visibility')
+          this.map.setLayoutProperty(layerId, 'visibility', 'visible')
+        } else {
+          console.log('[Render Buildings] Adding new layer')
+          this.map.addLayer({
+            id: layerId,
+            type: 'fill-extrusion',
+            source: sourceId,
+            paint: {
+              'fill-extrusion-color': [
+                'match',
+                ['get', 'pt_type'],
+                'factory', '#FF4D4F',
+                'company', '#FADB14',
+                '#00FFFF'
+              ],
+              'fill-extrusion-height': ['*', ['coalesce', ['get', 'height'], 20], heightMultiplier],
+              'fill-extrusion-base': 0,
+              'fill-extrusion-opacity': 0.9
+            },
+            layout: {
+              'visibility': 'visible'
+            }
+          })
+          
+          // 移到顶层
+          this.map.moveLayer(layerId)
+        }
+        
+        // 渲染持久化标签
+        this.renderBuildingMarkers()
+        
+      } catch (e) {
+        console.error('[Render Buildings] Error handling layer/source:', e)
+      }
+      
+      // 确保点位在最上层
+      if (this.map.getLayer('all-points')) {
+        this.map.moveLayer('all-points')
+      }
+    },
+    // 计算建筑物最密集的区域中心点
+    findDensestBuildingArea() {
+      if (!this.buildingData?.features?.length) return null
+      
+      // 获取所有建筑物的中心点
+      const centers = []
+      this.buildingData.features.forEach(f => {
+        const coords = f.geometry?.coordinates
+        if (coords && coords[0]) {
+          // 计算多边形的中心点
+          let sumLng = 0, sumLat = 0, count = 0
+          coords[0].forEach(c => {
+            if (Array.isArray(c) && c.length >= 2) {
+              sumLng += c[0]
+              sumLat += c[1]
+              count++
+            }
+          })
+          if (count > 0) {
+            centers.push([sumLng / count, sumLat / count])
+          }
+        }
+      })
+      
+      console.log('[Dense Area] Total buildings:', centers.length)
+      
+      if (centers.length === 0) return null
+      
+      // 使用网格法找到最密集的区域
+      // 将区域划分为网格，计算每个网格内的建筑物数量
+      const gridSize = 0.01  // 约1公里的网格
+      const gridCounts = {}
+      
+      centers.forEach(([lng, lat]) => {
+        // 计算网格索引
+        const gridX = Math.floor(lng / gridSize)
+        const gridY = Math.floor(lat / gridSize)
+        const key = `${gridX},${gridY}`
+        
+        if (!gridCounts[key]) {
+          gridCounts[key] = { count: 0, sumLng: 0, sumLat: 0, buildings: [] }
+        }
+        gridCounts[key].count++
+        gridCounts[key].sumLng += lng
+        gridCounts[key].sumLat += lat
+        gridCounts[key].buildings.push([lng, lat])
+      })
+      
+      // 找到建筑物最多的网格
+      let maxCount = 0
+      let densestGrid = null
+      
+      Object.values(gridCounts).forEach(data => {
+        if (data.count > maxCount) {
+          maxCount = data.count
+          densestGrid = data
+        }
+      })
+      
+      if (densestGrid && maxCount > 0) {
+        const centerLng = densestGrid.sumLng / densestGrid.count
+        const centerLat = densestGrid.sumLat / densestGrid.count
+        console.log('[Dense Area] Densest grid has', maxCount, 'buildings at', [centerLng, centerLat])
+        return [centerLng, centerLat]
+      }
+      
+      // 如果没有找到密集区域，返回所有建筑物的中心
+      let totalLng = 0, totalLat = 0
+      centers.forEach(([lng, lat]) => {
+        totalLng += lng
+        totalLat += lat
+      })
+      return [totalLng / centers.length, totalLat / centers.length]
     },
     updateOverviewCounts(geojson) {
       const ring = this.getOuterRingFromGeojson(geojson)
@@ -380,7 +583,23 @@ export default {
       });
       const bbox = this.computeGeoJSONBounds(this.boundary)
       console.log('fitBounds bbox:', bbox)
-      if (bbox) this.map.fitBounds(bbox, { padding: 40, duration: 0 })
+      if (bbox) {
+        // fitBounds 后保持 3D 视角（pitch）
+        this.map.fitBounds(bbox, { 
+          padding: 40, 
+          duration: 0,
+          pitch: this.is3DMode ? 80 : 0,  // 仅在 3D 模式下保持倾斜，否则为 0
+          bearing: 0
+        })
+      }
+      
+      // 在市级模式下渲染建筑物 3D 图层（如果数据已加载且处于3D模式）
+      if (this.currentMode === 'city' && this.is3DMode && this.buildingData && this.buildingData.features && this.buildingData.features.length > 0) {
+        console.log('[renderBoundary] 建筑物数据已存在且处于3D模式，开始渲染...')
+        this.renderBuildings()
+      } else {
+        console.log('[renderBoundary] 暂不渲染建筑物 (is3DMode=' + this.is3DMode + ')')
+      }
       
       // 确保点图层始终在最顶层
       if (this.map.getLayer('all-points')) {
@@ -433,24 +652,77 @@ export default {
       // 发送模式切换事件给 CarbonEmissionBar 组件
       bus.$emit('mode:switch', mode);
       
-      // 地点模式：同时显示企业、工厂和碳排放点
+      // 地点模式：先恢复 2D 视角，再显示点位
       if (mode === 'location') {
         // 确保城市边界显示
         if (!this.boundary) {
           this.fetchBoundaryByScale('City')
         }
         
-        // 显示所有点位
-        if (this.map.getLayer('all-points')) {
-          this.map.setLayoutProperty('all-points', 'visibility', 'visible')
-        } else if (this.allPointsData) {
-          this.renderAllPoints()
+        // 1. 立即隐藏建筑物和标记
+        if (this.map.getLayer('buildings-layer')) {
+          this.map.setLayoutProperty('buildings-layer', 'visibility', 'none')
         }
+        this.clearBuildingMarkers()
+        this.is3DMode = false
+
+        // 2. 隐藏所有点位（防止在 3D 视角下显示）
+        if (this.map.getLayer('all-points')) {
+          this.map.setLayoutProperty('all-points', 'visibility', 'none')
+        }
+
+        // 3. 飞向 2D 视图
+        this.map.flyTo({
+          pitch: 0,
+          bearing: 0,
+          zoom: 10, // 稍微拉近一点
+          duration: 1500
+        })
+
+        // 4. 动画结束后显示点位
+        this.map.once('moveend', () => {
+          if (this.currentMode === 'location') {
+             if (this.map.getLayer('all-points')) {
+               this.map.setLayoutProperty('all-points', 'visibility', 'visible')
+             } else if (this.allPointsData) {
+               this.renderAllPoints()
+             }
+          }
+        })
+
       } else {
         // 其他模式：隐藏所有点位，更新边界
         if (this.map.getLayer('all-points')) {
           this.map.setLayoutProperty('all-points', 'visibility', 'none')
         }
+        
+        // 市级模式显示建筑物，其他模式隐藏
+        if (mode === 'city') {
+          // 重新加载建筑物数据，防止渲染黑屏问题
+          this.fetchBuildingData()
+          
+          if (this.is3DMode) {
+            if (this.map.getLayer('buildings-layer')) {
+              this.map.setLayoutProperty('buildings-layer', 'visibility', 'visible')
+            }
+            // 恢复标记
+            this.updateVisibleMarkers()
+          }
+        } else {
+          // 切换到非市级模式，退出3D模式
+          this.is3DMode = false
+          this.clearBuildingMarkers()
+          this.map.flyTo({
+            pitch: 0,
+            zoom: 9,
+            duration: 1500
+          })
+          
+          if (this.map.getLayer('buildings-layer')) {
+            this.map.setLayoutProperty('buildings-layer', 'visibility', 'none')
+          }
+        }
+        
         this.fetchBoundaryByScale(scale)
         
         // 关闭所有卡片
@@ -529,6 +801,13 @@ export default {
             // 提取边界坐标（按 GeoJSON 标准 [lng, lat]）
             try {
               const coords = this.extractCoordinatesFromFeature(f);
+              
+              // 如果是市级模式，且未处于3D模式，点击城市进入 3D 模式
+              if (this.currentMode === 'city' && !this.is3DMode) {
+                console.log('[Map Identify] 点击城市，准备进入3D模式:', f.properties);
+                this.enter3DMode(f);
+              }
+
               if (coords && coords.length) {
                 const requestBody = {
                   type: 'Polygon',
@@ -560,6 +839,8 @@ export default {
             }
           } else {
             console.log('[Map Identify - Boundary] 未命中任何面要素');
+            // 点击空白处，如果处于3D模式，可以考虑退回2D（可选）
+            // this.exit3DMode(); 
             this.emitRegionFilter(null);
           }
         }
@@ -975,6 +1256,278 @@ export default {
         layerColor: layerStyle,
         visibility: this.map.getLayoutProperty(layerId, 'visibility')
       })
+    },
+    
+    // 进入3D模式逻辑
+    enter3DMode(cityFeature) {
+      if (!this.buildingData || !this.buildingData.features) {
+        console.warn('[Enter 3D] 无建筑物数据');
+        return;
+      }
+      
+      this.is3DMode = true;
+      
+      // 1. 渲染建筑物（如果还没渲染）
+      this.renderBuildings();
+      
+      // 2. 筛选该城市内的建筑物
+      // 简单起见，我们先尝试找到该城市范围内的建筑物
+      // 由于没有 turf，我们用简单的包围盒判断 + 射线法（如果需要更精确）
+      // 或者，如果建筑物数据里有 city_id 字段最好，但目前看可能没有
+      
+      // 获取城市多边形
+      const cityGeometry = cityFeature.geometry;
+      
+      // 筛选
+      const buildingsInCity = this.buildingData.features.filter(b => {
+        // 取建筑物第一个点作为代表点
+        const coords = b.geometry?.coordinates?.[0]?.[0];
+        if (!coords) return false;
+        return this.isPointInPolygon(coords, cityGeometry);
+      });
+      
+      console.log(`[Enter 3D] 城市内找到 ${buildingsInCity.length} 个建筑物`);
+      
+      let targetCenter;
+      let targetZoom = 14.5; // 稍微拉远一级，从 15.5 改为 14.5
+      
+      if (buildingsInCity.length > 0) {
+        // 计算这些建筑物的几何中心
+        const geometricCenter = this.findCenterOfFeatures(buildingsInCity);
+        
+        // 找到距离几何中心最近的一个建筑物作为锚点
+        // 这样避免 zoom 到空地
+        const nearestBuilding = this.findNearestFeature(geometricCenter, buildingsInCity);
+        
+        if (nearestBuilding) {
+          targetCenter = nearestBuilding.geometry?.coordinates?.[0]?.[0];
+          console.log('[Enter 3D] Found nearest building at:', targetCenter);
+        } else {
+          targetCenter = geometricCenter;
+        }
+      } else {
+        // 如果该城市没有建筑物数据，就飞向城市中心
+        targetCenter = this.computeFeatureCentroid(cityFeature.geometry);
+        targetZoom = 13;
+      }
+      
+      if (targetCenter) {
+        this.map.flyTo({
+          center: targetCenter,
+          zoom: targetZoom,
+          pitch: 80, // 修改为 80 度 (接近完全倾斜)
+          bearing: 30,
+          duration: 2000,
+          essential: true
+        });
+      }
+    },
+    
+    // 渲染所有建筑物的标签 (Updated for dynamic visibility)
+    renderBuildingMarkers() {
+      console.log('[Markers] renderBuildingMarkers called')
+      // 首次调用时，初始化可见标记
+      this.updateVisibleMarkers()
+      
+      // 监听地图移动事件，动态更新
+      if (!this._markerUpdateListener) {
+        this._markerUpdateListener = () => {
+          if (this.is3DMode && this.currentMode === 'city') {
+            this.updateVisibleMarkers()
+          }
+        }
+        this.map.on('moveend', this._markerUpdateListener)
+      }
+    },
+
+    updateVisibleMarkers() {
+      if (!this.buildingData || !this.buildingData.features || !this.is3DMode) return
+      
+      const center = this.map.getCenter()
+      const centerPoint = [center.lng, center.lat]
+      
+      // 1. 计算所有建筑物到当前中心点的距离
+      const buildingsWithDist = this.buildingData.features.map((f, index) => {
+        const fCenter = this.getFeatureCenter(f)
+        if (!fCenter) return null
+        
+        // 简单的欧氏距离平方
+        const dx = fCenter[0] - centerPoint[0]
+        const dy = fCenter[1] - centerPoint[1]
+        const distSq = dx * dx + dy * dy
+        
+        return {
+          feature: f,
+          index: index, // 使用索引作为唯一ID
+          center: fCenter,
+          distSq: distSq
+        }
+      }).filter(item => item !== null)
+      
+      // 2. 排序并取最近的 N 个
+      buildingsWithDist.sort((a, b) => a.distSq - b.distSq)
+      const nearest = buildingsWithDist.slice(0, this.maxVisibleMarkers)
+      const nearestIndices = new Set(nearest.map(item => item.index))
+      
+      // 3. 移除不再范围内的标记
+      for (const [index, marker] of this.visibleMarkers.entries()) {
+        if (!nearestIndices.has(index)) {
+          marker.remove()
+          this.visibleMarkers.delete(index)
+        }
+      }
+      
+      // 4. 添加新进入范围的标记
+      nearest.forEach(item => {
+        if (!this.visibleMarkers.has(item.index)) {
+          const marker = this.createSingleBuildingMarker(item.feature)
+          if (marker) {
+            this.visibleMarkers.set(item.index, marker)
+          }
+        }
+      })
+    },
+    
+    getFeatureCenter(feature) {
+      if (feature._calculatedCenter) return feature._calculatedCenter
+      
+      const geometry = feature.geometry
+      const bounds = new mapboxgl.LngLatBounds()
+
+      if (geometry.type === 'Polygon') {
+        geometry.coordinates[0].forEach(coord => bounds.extend(coord))
+      } else if (geometry.type === 'MultiPolygon') {
+        geometry.coordinates.forEach(polygon => {
+          polygon[0].forEach(coord => bounds.extend(coord))
+        })
+      } else {
+        return null
+      }
+      
+      const center = bounds.getCenter()
+      feature._calculatedCenter = [center.lng, center.lat]
+      return feature._calculatedCenter
+    },
+
+    createSingleBuildingMarker(feature) {
+      const name = feature.properties.pt_name || feature.properties.name
+      if (!name) return null
+
+      const center = this.getFeatureCenter(feature)
+      
+      // 计算高度：与 fill-extrusion-height 保持一致
+      // ['*', ['coalesce', ['get', 'height'], 20], heightMultiplier]
+      const rawHeight = feature.properties.height || 20
+      const heightMultiplier = 8
+      const altitude = rawHeight * heightMultiplier
+
+      // 创建 DOM 元素
+      const el = document.createElement('div')
+      el.className = 'building-label-marker'
+      el.innerHTML = `
+        <div class="label-card">
+          <div class="label-content">
+            <span class="label-text">${name}</span>
+          </div>
+        </div>
+        <div class="label-line"></div>
+        <div class="label-dot"></div>
+      `
+
+      // 创建 Marker
+      const marker = new mapboxgl.Marker({
+        element: el,
+        anchor: 'bottom'
+      })
+        .setLngLat(center)
+      
+      // 设置海拔高度 (Mapbox GL JS v2/v3 支持)
+      if (marker.setAltitude) {
+        marker.setAltitude(altitude)
+      }
+
+      marker.addTo(this.map)
+      
+      return marker
+    },
+
+    // 清除所有建筑物标签
+    clearBuildingMarkers() {
+      this.visibleMarkers.forEach(marker => marker.remove())
+      this.visibleMarkers.clear()
+      if (this._markerUpdateListener) {
+        this.map.off('moveend', this._markerUpdateListener)
+        this._markerUpdateListener = null
+      }
+    },
+
+    findNearestFeature(centerPoint, features) {
+      if (!centerPoint || !features || features.length === 0) return null;
+      
+      let minDistance = Infinity;
+      let nearest = null;
+      
+      features.forEach(f => {
+        const coords = f.geometry?.coordinates?.[0]?.[0];
+        if (coords) {
+          // 简单的欧几里得距离平方（比较大小时不需要开方）
+          const dx = coords[0] - centerPoint[0];
+          const dy = coords[1] - centerPoint[1];
+          const distSq = dx * dx + dy * dy;
+          
+          if (distSq < minDistance) {
+            minDistance = distSq;
+            nearest = f;
+          }
+        }
+      });
+      
+      return nearest;
+    },
+    
+    // 简单的点在多边形内判断 (Ray casting algorithm)
+    isPointInPolygon(point, geometry) {
+      const x = point[0], y = point[1];
+      let inside = false;
+      
+      const checkRing = (ring) => {
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+          const xi = ring[i][0], yi = ring[i][1];
+          const xj = ring[j][0], yj = ring[j][1];
+          
+          const intersect = ((yi > y) !== (yj > y)) &&
+              (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+          if (intersect) inside = !inside;
+        }
+      };
+      
+      if (geometry.type === 'Polygon') {
+        checkRing(geometry.coordinates[0]); // 只检查外环
+      } else if (geometry.type === 'MultiPolygon') {
+        for (const poly of geometry.coordinates) {
+          checkRing(poly[0]);
+          if (inside) break; // 只要在一个多边形内就算在
+        }
+      }
+      
+      return inside;
+    },
+    
+    findCenterOfFeatures(features) {
+      if (!features || features.length === 0) return null;
+      let sumLng = 0, sumLat = 0, count = 0;
+      
+      features.forEach(f => {
+        const coords = f.geometry?.coordinates?.[0]?.[0]; // 取第一个点
+        if (coords) {
+          sumLng += coords[0];
+          sumLat += coords[1];
+          count++;
+        }
+      });
+      
+      if (count === 0) return null;
+      return [sumLng / count, sumLat / count];
     }
   }
 }
@@ -1212,4 +1765,145 @@ export default {
 .dot-sampling { background: #52C41A; box-shadow: 0 2px 10px rgba(82,196,26,0.18); }
 .legend-label { color: #cfeeff; font-weight: 500; font-size: 13px;}
 .map-legend.hidden { display: none; }
+
+/* Building Label Marker Styles - Tech/Sci-fi Theme */
+.building-label-marker {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+  /* 确保标记底部对齐到锚点位置 */
+  transform-origin: bottom center;
+  z-index: 10; /* Ensure it's above other map elements */
+}
+
+.label-card {
+  /* 科技感背景：深色半透明 + 模糊 */
+  background: rgba(4, 16, 30, 0.85);
+  border: 1px solid rgba(0, 242, 255, 0.5);
+  /* 切角效果 */
+  clip-path: polygon(
+    10px 0, 100% 0, 
+    100% calc(100% - 10px), calc(100% - 10px) 100%, 
+    0 100%, 0 10px
+  );
+  padding: 8px 16px;
+  /* 霓虹发光效果 */
+  box-shadow: 
+    0 0 15px rgba(0, 242, 255, 0.2),
+    inset 0 0 20px rgba(0, 242, 255, 0.1);
+  backdrop-filter: blur(4px);
+  margin-bottom: 0;
+  position: relative;
+  animation: floatCard 3s ease-in-out infinite;
+}
+
+/* 卡片角落装饰 */
+.label-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 8px;
+  height: 8px;
+  border-top: 2px solid #00f2ff;
+  border-left: 2px solid #00f2ff;
+}
+
+.label-card::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 8px;
+  height: 8px;
+  border-bottom: 2px solid #00f2ff;
+  border-right: 2px solid #00f2ff;
+}
+
+.label-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+
+
+.label-text {
+  color: #e6f7ff;
+  font-family: 'Rajdhani', 'DIN Pro', sans-serif; /* 假设有科技感字体，回退到 sans-serif */
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  text-shadow: 0 0 5px rgba(0, 242, 255, 0.6);
+}
+
+.label-line {
+  width: 2px;
+  height: 80px; /* 增加高度，让卡片悬浮更高 */
+  /* 能量光束渐变 */
+  background: linear-gradient(to bottom, 
+    rgba(0, 242, 255, 1) 0%, 
+    rgba(0, 242, 255, 0.5) 50%, 
+    rgba(0, 242, 255, 0) 100%
+  );
+  box-shadow: 0 0 8px rgba(0, 242, 255, 0.6);
+  margin-top: -1px;
+  position: relative;
+  overflow: hidden;
+}
+
+/* 光束流动动画效果 */
+.label-line::after {
+  content: '';
+  position: absolute;
+  top: -100%;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(to bottom, transparent, rgba(255, 255, 255, 0.8), transparent);
+  animation: beamFlow 2s linear infinite;
+}
+
+.label-dot {
+  width: 8px;
+  height: 8px;
+  background: #00f2ff;
+  border-radius: 50%;
+  box-shadow: 0 0 10px #00f2ff, 0 0 20px #00f2ff;
+  margin-top: -4px;
+  position: relative;
+  z-index: 1;
+}
+
+/* 锚点波纹动画 */
+.label-dot::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 100%;
+  height: 100%;
+  border: 1px solid #00f2ff;
+  border-radius: 50%;
+  animation: ripple 2s linear infinite;
+}
+
+@keyframes floatCard {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-5px); }
+}
+
+@keyframes beamFlow {
+  0% { top: -100%; }
+  100% { top: 100%; }
+}
+
+@keyframes ripple {
+  0% { width: 100%; height: 100%; opacity: 1; }
+  100% { width: 300%; height: 300%; opacity: 0; }
+}
 </style>
