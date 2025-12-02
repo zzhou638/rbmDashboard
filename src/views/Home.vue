@@ -98,13 +98,13 @@
                 </div>
               </div>
               <div class="chat-box">
-                <input
+                <textarea
                   v-model="chatInput"
-                  type="text"
                   class="chat-input"
-                  placeholder="向 AI Agent 提问... 按 Enter 发送"
-                  @keyup.enter="onSendChat"
-                />
+                  placeholder="向 AI Agent 提问... Enter 发送，Shift+Enter 换行"
+                  @keydown="handleChatKeydown"
+                  rows="1"
+                ></textarea>
                 <button class="chat-send" @click="onSendChat">发送</button>
               </div>
             </div>
@@ -148,6 +148,8 @@ import EsgReportCard from '@/components/EsgReportCard.vue'
 import GreenFinanceInvestimentTrend from '@/components/GreenFinanceInvestimentTrend.vue'
 import axios from 'axios'
 import { http } from '@/api/api.js'
+import katex from 'katex'
+import 'katex/dist/katex.min.css'
 export default {
   name: 'HomePage',
   components: {
@@ -229,6 +231,20 @@ export default {
     this.checkLanEndpoint()
   },
   methods: {
+    // 处理聊天输入框的键盘事件
+    handleChatKeydown(e) {
+      if (e.key === 'Enter') {
+        if (e.shiftKey) {
+          // Shift + Enter: 允许换行（默认行为，不需要处理）
+          return
+        } else {
+          // 单独 Enter: 发送消息
+          e.preventDefault()
+          this.onSendChat()
+        }
+      }
+    },
+    
     // 检查局域网端点是否可用
     checkLanEndpoint() {
       const lanUrl = 'http://10.4.183.186:8000/api/agent'
@@ -337,7 +353,39 @@ export default {
     renderMarkdown(raw) {
       if (!raw && raw !== 0) return ''
       let s = String(raw)
-      // 防止 HTML 注入：先转义
+      
+      // 先处理 LaTeX 公式，使用占位符保护它们不被 HTML 转义
+      const mathPlaceholders = []
+      let mathIndex = 0
+      
+      // 处理行内公式 \( ... \) 和块级公式 \[ ... \]
+      s = s.replace(/\\\[([\s\S]+?)\\\]/g, (match, formula) => {
+        try {
+          const rendered = katex.renderToString(formula, { displayMode: true, throwOnError: false })
+          const placeholder = `__MATH_BLOCK_${mathIndex}__`
+          mathPlaceholders.push({ placeholder, html: rendered })
+          mathIndex++
+          return placeholder
+        } catch (e) {
+          console.error('KaTeX render error:', e)
+          return match
+        }
+      })
+      
+      s = s.replace(/\\\(([\s\S]+?)\\\)/g, (match, formula) => {
+        try {
+          const rendered = katex.renderToString(formula, { displayMode: false, throwOnError: false })
+          const placeholder = `__MATH_INLINE_${mathIndex}__`
+          mathPlaceholders.push({ placeholder, html: rendered })
+          mathIndex++
+          return placeholder
+        } catch (e) {
+          console.error('KaTeX render error:', e)
+          return match
+        }
+      })
+      
+      // 防止 HTML 注入：先转义（但保留占位符）
       s = this.escapeHtml(s)
 
       // 行内代码 `code`
@@ -346,18 +394,52 @@ export default {
       // 加粗 **bold**
       s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
 
-      // 标题 #, ##, ###
+      // 水平分隔线 --- 或 ***
+      s = s.replace(/^[-*]{3,}\s*$/gm, '<hr class="markdown-hr" />')
+
+      // 标题 #, ##, ###, ####, #####, ######
+      s = s.replace(/^######\s+(.*)$/gm, '<h6>$1</h6>')
+      s = s.replace(/^#####\s+(.*)$/gm, '<h5>$1</h5>')
+      s = s.replace(/^####\s+(.*)$/gm, '<h4>$1</h4>')
       s = s.replace(/^###\s+(.*)$/gm, '<h3>$1</h3>')
       s = s.replace(/^##\s+(.*)$/gm, '<h2>$1</h2>')
       s = s.replace(/^#\s+(.*)$/gm, '<h1>$1</h1>')
 
-      // 将按行处理列表和段落
+      // 将按行处理列表、表格和段落
       const lines = s.split(/\r?\n/)
       let out = ''
       let inUl = false
       let inOl = false
+      let inTable = false
+      let tableRows = []
+      
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i]
+        
+        // 检测表格行（包含 | 分隔符）
+        if (line.trim().includes('|')) {
+          // 关闭之前的列表
+          if (inUl) { out += '</ul>'; inUl = false }
+          if (inOl) { out += '</ol>'; inOl = false }
+          
+          // 检查是否是分隔行（如 |---|---|）
+          const isSeparator = /^\s*\|[\s\-:|]+\|\s*$/.test(line)
+          
+          if (!isSeparator) {
+            tableRows.push(line)
+            inTable = true
+          }
+          continue
+        } else if (inTable) {
+          // 表格结束，渲染表格
+          if (tableRows.length > 0) {
+            out += this.renderTable(tableRows)
+            tableRows = []
+          }
+          inTable = false
+        }
+        
+        // 列表项
         if (/^\s*[-*]\s+/.test(line)) {
           if (inOl) { out += '</ol>'; inOl = false }
           if (!inUl) { out += '<ul>'; inUl = true }
@@ -370,6 +452,7 @@ export default {
           out += '<li>' + line.replace(/^\s*\d+\.\s+/, '') + '</li>'
           continue
         }
+        
         // 空行 -> 段落分隔
         if (line.trim() === '') {
           if (inUl) { out += '</ul>'; inUl = false }
@@ -377,17 +460,63 @@ export default {
           out += ''
           continue
         }
-        // 非列表、非标题的普通行，包成段落
-        if (!/^<h[1-3]>/i.test(line)) {
+        
+        // 非列表、非标题、非分隔线的普通行，包成段落
+        if (!/^<h[1-6]>/i.test(line) && !line.includes('<hr')) {
           out += '<p>' + line + '</p>'
         } else {
           out += line
         }
       }
+      
+      // 处理最后可能未闭合的表格
+      if (inTable && tableRows.length > 0) {
+        out += this.renderTable(tableRows)
+      }
+      
       if (inUl) out += '</ul>'
       if (inOl) out += '</ol>'
 
+      // 最后，将数学公式占位符替换回渲染后的 HTML
+      mathPlaceholders.forEach(({ placeholder, html }) => {
+        out = out.replace(placeholder, html)
+      })
+
       return out
+    },
+    
+    // 渲染表格的辅助函数
+    renderTable(rows) {
+      if (rows.length === 0) return ''
+      
+      let html = '<table class="markdown-table">'
+      
+      // 第一行作为表头
+      if (rows.length > 0) {
+        html += '<thead><tr>'
+        const headerCells = rows[0].split('|').filter(cell => cell.trim() !== '')
+        headerCells.forEach(cell => {
+          html += '<th>' + cell.trim() + '</th>'
+        })
+        html += '</tr></thead>'
+      }
+      
+      // 其余行作为表体
+      if (rows.length > 1) {
+        html += '<tbody>'
+        for (let i = 1; i < rows.length; i++) {
+          html += '<tr>'
+          const cells = rows[i].split('|').filter(cell => cell.trim() !== '')
+          cells.forEach(cell => {
+            html += '<td>' + cell.trim() + '</td>'
+          })
+          html += '</tr>'
+        }
+        html += '</tbody>'
+      }
+      
+      html += '</table>'
+      return html
     },
     closeChatPanel() {
       this.showChatPanel = false
@@ -803,6 +932,99 @@ export default {
   text-align: left;
 }
 
+/* KaTeX 数学公式样式 */
+.chat-message .bubble .katex {
+  font-size: 1.1em;
+  color: #e7f7ff;
+}
+
+.chat-message .bubble .katex-display {
+  margin: 0.5em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.chat-message .bubble .katex .mord,
+.chat-message .bubble .katex .mbin,
+.chat-message .bubble .katex .mrel,
+.chat-message .bubble .katex .mop {
+  color: #e7f7ff;
+}
+
+/* Markdown 表格样式 */
+.chat-message .bubble .markdown-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.8em 0;
+  font-size: 13px;
+  overflow-x: auto;
+  display: block;
+  border: 2px solid rgba(102, 221, 255, 0.5);
+  border-radius: 6px;
+  background: rgba(0, 20, 40, 0.6);
+}
+
+.chat-message .bubble .markdown-table thead {
+  background: linear-gradient(180deg, rgba(102, 221, 255, 0.25) 0%, rgba(102, 221, 255, 0.15) 100%);
+}
+
+.chat-message .bubble .markdown-table th {
+  padding: 10px 14px;
+  text-align: left;
+  border: 1px solid rgba(102, 221, 255, 0.4);
+  color: #66ddff;
+  font-weight: 700;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.chat-message .bubble .markdown-table td {
+  padding: 10px 14px;
+  border: 1px solid rgba(102, 221, 255, 0.3);
+  color: #e7f7ff;
+  line-height: 1.6;
+}
+
+.chat-message .bubble .markdown-table tbody tr:nth-child(odd) {
+  background: rgba(102, 221, 255, 0.03);
+}
+
+.chat-message .bubble .markdown-table tbody tr:nth-child(even) {
+  background: rgba(102, 221, 255, 0.08);
+}
+
+.chat-message .bubble .markdown-table tbody tr:hover {
+  background: rgba(102, 221, 255, 0.15);
+  transition: background 0.2s ease;
+}
+
+/* Markdown 标题样式 */
+.chat-message .bubble h1,
+.chat-message .bubble h2,
+.chat-message .bubble h3,
+.chat-message .bubble h4,
+.chat-message .bubble h5,
+.chat-message .bubble h6 {
+  color: #66ddff;
+  margin: 0.8em 0 0.4em 0;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.chat-message .bubble h1 { font-size: 1.6em; }
+.chat-message .bubble h2 { font-size: 1.4em; }
+.chat-message .bubble h3 { font-size: 1.2em; }
+.chat-message .bubble h4 { font-size: 1.1em; }
+.chat-message .bubble h5 { font-size: 1.05em; }
+.chat-message .bubble h6 { font-size: 1em; }
+
+/* Markdown 水平分隔线样式 */
+.chat-message .bubble .markdown-hr {
+  border: none;
+  margin: 1em 0;
+  height: 0;
+}
+
 /* 地图可视区域：高度略缩小，四周 10px 间距 */
 .map-viewport {
   flex: 1 1 auto;
@@ -830,12 +1052,18 @@ export default {
 
 .chat-input {
   flex: 1;
-  height: 36px;
+  min-height: 36px;
+  max-height: 120px;
   background: rgba(0,0,0,0.4);
   border: 1px solid rgba(102, 221, 255, 0.3);
   border-radius: 4px;
   color: #cfefff;
-  padding: 0 10px;
+  padding: 8px 10px;
+  resize: none;
+  overflow-y: auto;
+  font-family: 'Arial', 'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 .chat-send {
