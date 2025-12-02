@@ -6,8 +6,16 @@
         :key="item.key"
         class="card"
       >
-        <div class="card__glow" :class="`corner-${item.position}`"></div>
-        <div class="card__border"></div>
+        <!-- 四个角的装饰 -->
+        <div class="card__bracket card__bracket--lt"></div>
+        <div class="card__bracket card__bracket--rt"></div>
+        <div class="card__bracket card__bracket--lb"></div>
+        <div class="card__bracket card__bracket--rb"></div>
+
+        <!-- 顶部和底部的装饰条 -->
+        <div class="card__decoration-top"></div>
+        <div class="card__decoration-bottom"></div>
+
         <div class="card__content">
           <div class="card__label">{{ item.label }}</div>
           <div class="card__value">
@@ -15,11 +23,12 @@
             <span class="unit">{{ item.unit }}</span>
           </div>
         </div>
+        
+        <!-- 扫描线效果 -->
         <div class="card__scanline"></div>
       </div>
     </div>
   </div>
-  
 </template>
 
 <script>
@@ -30,10 +39,10 @@ export default {
   data() {
     return {
       items: [
-        { key: 'patent', label: '绿色专利', value: '20,560,123', unit: '件', position: 'lt' },
-        { key: 'enterprise', label: '绿色企业', value: '20,560,123', unit: '家', position: 'rt' },
-        { key: 'factory', label: '工厂数', value: '20,560,123', unit: '座', position: 'lb' },
-        { key: 'investment', label: '总投资', value: '3639.4', unit: '亿元', position: 'rb' }
+        { key: 'patent', label: '绿色专利', value: '20,560,123', unit: '件' },
+        { key: 'enterprise', label: '绿色企业', value: '20,560,123', unit: '家' },
+        { key: 'factory', label: '工厂数', value: '20,560,123', unit: '座' },
+        { key: 'investment', label: '总投资', value: '3639.4', unit: '亿元' }
       ]
     }
   },
@@ -159,7 +168,7 @@ export default {
 .overview-numbers {
   width: 100%;
   height: 100%;
-  padding: 12px;
+  padding: 0 12px 12px 12px; /* Reduced top padding */
   box-sizing: border-box;
 }
 
@@ -173,133 +182,175 @@ export default {
 
 .card {
   position: relative;
-  overflow: hidden;
-  border-radius: 14px;
-  background: radial-gradient(120% 120% at 0% 0%, rgba(0, 255, 214, 0.06) 0%, rgba(0, 117, 255, 0.06) 45%, rgba(0, 0, 0, 0.24) 100%),
-              linear-gradient(180deg, rgba(15, 21, 40, 0.9), rgba(10, 14, 26, 0.9));
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35), inset 0 0 24px rgba(0, 200, 255, 0.06);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  transition: transform 0.35s ease, box-shadow 0.35s ease;
+  /* 移除 overflow: hidden 以允许装饰元素溢出（如果需要），但这里我们保持在内部 */
+  /* overflow: hidden; */
+  background: rgba(10, 14, 26, 0.6); /* 半透明深色背景 */
+  /* backdrop-filter: blur(4px); */ /* 可选：毛玻璃效果 */
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  transition: all 0.3s ease;
 }
 
-.card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.45), inset 0 0 28px rgba(0, 200, 255, 0.12);
-}
-
-.card__border {
+/* 
+  半开放式边框设计 
+  使用绝对定位的 div 来模拟四个角的括号
+*/
+.card__bracket {
   position: absolute;
-  inset: 0;
-  border-radius: 14px;
-  padding: 1px;
-  background: linear-gradient(135deg, rgba(0, 255, 214, 0.45), rgba(0, 117, 255, 0.45), rgba(177, 0, 255, 0.45));
-  -webkit-mask: 
-    linear-gradient(#000 0 0) content-box, 
-    linear-gradient(#000 0 0);
-  mask: 
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-          mask-composite: exclude;
-  pointer-events: none;
+  width: 15px;
+  height: 15px;
+  border: 2px solid rgba(0, 200, 255, 0.6); /* 默认淡蓝色 */
+  transition: all 0.3s ease;
+  box-shadow: 0 0 5px rgba(0, 200, 255, 0.3);
 }
+
+/* 左上角 */
+.card__bracket--lt {
+  top: 0;
+  left: 0;
+  border-right: none;
+  border-bottom: none;
+  border-top-left-radius: 4px; /* 轻微圆角 */
+}
+
+/* 右上角 */
+.card__bracket--rt {
+  top: 0;
+  right: 0;
+  border-left: none;
+  border-bottom: none;
+  border-top-right-radius: 4px;
+}
+
+/* 左下角 */
+.card__bracket--lb {
+  bottom: 0;
+  left: 0;
+  border-right: none;
+  border-top: none;
+  border-bottom-left-radius: 4px;
+}
+
+/* 右下角 */
+.card__bracket--rb {
+  bottom: 0;
+  right: 0;
+  border-left: none;
+  border-top: none;
+  border-bottom-right-radius: 4px;
+}
+
+/* 悬停效果：边框变亮，可能稍微变大 */
+.card:hover .card__bracket {
+  border-color: rgba(0, 255, 214, 1); /* 亮青色 */
+  box-shadow: 0 0 10px rgba(0, 255, 214, 0.6);
+  width: 20px;
+  height: 20px;
+}
+
+/* 顶部和底部的装饰条 (类似图片中的上下箭头或线条) */
+.card__decoration-top,
+.card__decoration-bottom {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 40%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(0, 200, 255, 0.3), transparent);
+}
+
+.card__decoration-top {
+  top: 4px;
+}
+
+.card__decoration-bottom {
+  bottom: 4px;
+  /* 可以加一个小箭头效果，这里简化为线条 */
+  height: 3px;
+  background: linear-gradient(90deg, transparent, rgba(0, 200, 255, 0.5), transparent);
+  clip-path: polygon(0 0, 100% 0, 50% 100%); /* 倒三角形 */
+  width: 20px;
+  height: 4px;
+}
+
 
 .card__content {
   position: relative;
   z-index: 2;
-  height: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 18px 14px;
+  padding: 10px;
   text-align: center;
+  width: 100%;
 }
 
 .card__label {
   font-size: 14px;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.1em;
   color: #8fb7ff;
   text-transform: uppercase;
-  text-shadow: 0 0 10px rgba(0, 174, 255, 0.35);
+  margin-bottom: 0px; /* Reduced from 4px */
+  text-shadow: 0 0 5px rgba(0, 174, 255, 0.3);
 }
 
 .card__value {
-  margin-top: 8px;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
 }
 
 .card__value .num {
+  font-family: 'Bahnschrift', 'Roboto', sans-serif;
   font-weight: 700;
-  font-size: 24px;
-  line-height: 1.1;
-  background: linear-gradient(180deg, #e7f5ff 0%, #9cd4ff 60%, #5ac8ff 100%);
+  font-size: 24px; /* Reduced from 28px */
+  line-height: 1;
+  color: #fff;
+  /* 简单的白色发光效果，或者保留之前的渐变 */
+  text-shadow: 0 0 10px rgba(0, 200, 255, 0.6);
+  background: linear-gradient(180deg, #ffffff 0%, #b0e0ff 100%);
   -webkit-background-clip: text;
-          background-clip: text;
-  color: transparent;
-  text-shadow: 0 0 18px rgba(22, 170, 255, 0.35);
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 .card__value .unit {
-  margin-left: 6px;
-  font-size: 14px;
+  margin-left: 4px;
+  font-size: 12px;
   color: #9ad7ff;
-  opacity: 0.9;
+  opacity: 0.8;
 }
 
-.card__glow {
-  position: absolute;
-  width: 140px;
-  height: 140px;
-  filter: blur(28px);
-  background: radial-gradient(closest-side, rgba(0, 224, 255, 0.65), rgba(0, 224, 255, 0) 70%);
-  opacity: 0.6;
-  z-index: 1;
-  transition: transform 0.6s ease, opacity 0.6s ease;
-}
-
-.card:hover .card__glow {
-  opacity: 0.85;
-  transform: scale(1.05);
-}
-
-.corner-lt { top: -40px; left: -40px; }
-.corner-rt { top: -40px; right: -40px; }
-.corner-lb { bottom: -40px; left: -40px; }
-.corner-rb { bottom: -40px; right: -40px; }
-
+/* 扫描线动画 */
 .card__scanline {
-  content: '';
   position: absolute;
-  left: -50%;
-  top: -120%;
-  width: 200%;
-  height: 220%;
-  background: linear-gradient(
-    120deg,
-    rgba(255, 255, 255, 0) 40%,
-    rgba(0, 200, 255, 0.12) 50%,
-    rgba(255, 255, 255, 0) 60%
-  );
-  transform: rotate(8deg);
-  animation: scan 5.2s linear infinite;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(to bottom, transparent, rgba(0, 255, 214, 0.05), transparent);
+  transform: translateY(-100%);
+  animation: scan 3s linear infinite;
   pointer-events: none;
+  z-index: 1;
 }
 
 @keyframes scan {
-  0% { transform: translateY(0) rotate(8deg); }
-  100% { transform: translateY(60%) rotate(8deg); }
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
 }
 
 /* 响应式 */
 @media (max-width: 1200px) {
-  .card__value .num { font-size: 22px; }
+  .card__value .num { font-size: 24px; }
 }
 
 @media (max-width: 992px) {
   .cards-grid { grid-template-columns: 1fr; }
 }
-
 </style>
 
 

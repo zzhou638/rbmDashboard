@@ -19,6 +19,23 @@
         </button>
       </div>
     </div>
+
+    <!-- 图层控制面板 (左上角) -->
+    <div class="layer-control-panel">
+      <div class="layer-buttons">
+        <button 
+          v-for="layer in layers" 
+          :key="layer.value" 
+          :class="['layer-btn', { active: activeLayers.includes(layer.value) }]"
+          @click="toggleLayer(layer.value)"
+        >
+          <span class="layer-icon" :class="layer.iconClass"></span>
+          <span class="layer-text">{{ layer.label }}</span>
+          <div class="layer-indicator"></div>
+        </button>
+      </div>
+    </div>
+
     <!-- 地点图例（仅在 location 模式显示） -->
     <div class="map-legend" :class="{ hidden: currentMode !== 'location' }">
       <ul>
@@ -84,6 +101,13 @@ export default {
         { value: 'city', label: '市级', scale: 'City' },
         { value: 'district', label: '区级', scale: 'District' },
         { value: 'location', label: '地点', scale: 'Location' }
+      ],
+      activeLayers: [], // 当前激活的图层
+      carbonLayerData: null,
+      tempLayerData: null,
+      layers: [
+        { value: 'carbon', label: '碳排放', iconClass: 'icon-carbon' },
+        { value: 'temperature', label: '温度', iconClass: 'icon-temp' }
       ]
     }
   },
@@ -731,6 +755,46 @@ export default {
         this.$refs.carbonCard && this.$refs.carbonCard.close && this.$refs.carbonCard.close()
       }
     },
+    
+    // 处理建筑物点击逻辑
+    handleBuildingClick(properties) {
+      if (!properties) return;
+      
+      const type = properties.pt_type;
+      console.log('[Building Click] Type:', type, 'Properties:', properties);
+      
+      if (type === 'company') {
+        let stockCode = properties.pt_stock_n;
+        if (stockCode) {
+          // Ensure it's a string and pad to 6 digits (corrected from 8)
+          stockCode = String(stockCode).padStart(6, '0');
+          console.log('[Building Click] Opening Company Card with Stock Code:', stockCode);
+          this.$refs.companyCard.show(stockCode);
+        } else {
+          console.warn('[Building Click] Company building missing pt_stock_n');
+          // Fallback to name if available
+          const name = properties.pt_name || properties.name;
+          if (name) this.$refs.companyCard.show(name);
+        }
+      } else if (type === 'factory') {
+        // Try multiple possible field names for UUID
+        const uuid = properties.pt_uuid || properties.uuid || properties.factory_uuid || properties.factory_uu;
+        if (uuid) {
+          console.log('[Building Click] Opening Factory Card with UUID:', uuid);
+          this.$refs.factoryCard.show(uuid);
+        } else {
+           console.warn('[Building Click] Factory building missing pt_uuid/uuid', properties);
+        }
+      } else {
+        // Fallback for other types or unknown types
+        const name = properties.pt_name || properties.name;
+        if (name) {
+             console.log('[Building Click] Opening Company Card with Name (Fallback):', name);
+             this.$refs.companyCard.show(name);
+        }
+      }
+    },
+
     // 点击事件，点击地图输出对应的属性
     bindIdentify() {
       if (!this.map) return;
@@ -784,6 +848,16 @@ export default {
           // this.$refs.companyCard && this.$refs.companyCard.close()
           // this.$refs.factoryCard && this.$refs.factoryCard.close()
         } else {
+          // 如果处于3D模式，优先查询建筑物
+          if (this.is3DMode) {
+            const buildingFeatures = this.map.queryRenderedFeatures(bbox, { layers: ['buildings-layer'] });
+            if (buildingFeatures && buildingFeatures.length) {
+              const f = buildingFeatures[0];
+              this.handleBuildingClick(f.properties);
+              return; // 阻止向下穿透到面图层
+            }
+          }
+
           // 市级和区级模式：查询面图层
           features = this.map.queryRenderedFeatures(bbox, { layers: ['gba-fill', 'gba-line'] });
 
@@ -1433,6 +1507,13 @@ export default {
         <div class="label-line"></div>
         <div class="label-dot"></div>
       `
+      
+      // 添加点击事件
+      el.addEventListener('click', (e) => {
+        e.stopPropagation(); // 阻止地图点击事件
+        console.log('[Marker Click] 点击建筑物标签:', name);
+        this.handleBuildingClick(feature.properties);
+      });
 
       // 创建 Marker
       const marker = new mapboxgl.Marker({
@@ -1528,6 +1609,280 @@ export default {
       
       if (count === 0) return null;
       return [sumLng / count, sumLat / count];
+    },
+    toggleLayer(layerValue) {
+      const index = this.activeLayers.indexOf(layerValue);
+      if (index === -1) {
+        this.activeLayers.push(layerValue);
+        console.log(`[Layer Control] Layer activated: ${layerValue}`);
+        
+        // 如果数据未加载，先加载数据
+        if (layerValue === 'carbon' && !this.carbonLayerData) {
+          this.fetchLayerData('carbon');
+        } else if (layerValue === 'temperature' && !this.tempLayerData) {
+          this.fetchLayerData('temperature');
+        } else {
+          // 数据已存在，直接显示
+          this.setLayerVisibility(layerValue, true);
+        }
+      } else {
+        this.activeLayers.splice(index, 1);
+        console.log(`[Layer Control] Layer deactivated: ${layerValue}`);
+        this.setLayerVisibility(layerValue, false);
+      }
+    },
+    fetchLayerData(type) {
+      let url = '';
+      let params = {};
+      
+      if (type === 'carbon') {
+        url = 'map/natural-heatpoints';
+        params = { type: 'carbonEmission' }; // 不指定year，使用最新年份
+      } else if (type === 'temperature') {
+        url = 'map/natural-heatpoints';
+        params = { type: 'LST' }; // 不指定year，使用最新年份
+      }
+      
+      if (!url) return;
+      
+      console.log(`[Layer Data] Fetching ${type} heatpoints from ${url} with params:`, params);
+      http.get(url, { params })
+        .then(res => {
+          console.log(`[Layer Data] ${type} heatpoints loaded:`, res.data?.features?.length);
+          if (type === 'carbon') {
+            this.carbonLayerData = res.data;
+          } else {
+            this.tempLayerData = res.data;
+          }
+          this.renderLayer(type);
+        })
+        .catch(err => {
+          console.error(`[Layer Data] Failed to load ${type} heatpoints:`, err);
+        });
+    },
+    setLayerVisibility(type, visible) {
+      if (!this.map) return;
+      const layerId = `${type}-fill`;
+      if (this.map.getLayer(layerId)) {
+        this.map.setLayoutProperty(layerId, 'visibility', visible ? 'visible' : 'none');
+      }
+    },
+    renderLayer(type) {
+      if (!this.map) return;
+      
+      const rawData = type === 'carbon' ? this.carbonLayerData : this.tempLayerData;
+      if (!rawData || !rawData.features || rawData.features.length === 0) return;
+      
+      // 0. 数据清洗与验证
+      // "varint doesn't fit into 10 bytes" 通常是由于坐标精度过高导致的
+      // 需要将坐标四舍五入到合理精度（4位小数约为10米精度）
+      const roundCoord = (coord) => {
+        if (Array.isArray(coord)) {
+          // 如果是坐标点 [lng, lat]
+          if (coord.length === 2 && typeof coord[0] === 'number' && typeof coord[1] === 'number') {
+            return [
+              Math.round(coord[0] * 10000) / 10000,  // 保留4位小数
+              Math.round(coord[1] * 10000) / 10000
+            ];
+          }
+          // 如果是数组容器，继续递归
+          return coord.map(roundCoord);
+        }
+        return coord;
+      };
+
+      const validFeatures = rawData.features.map((f, index) => {
+        if (!f.geometry || !f.geometry.coordinates) return null;
+        
+        // 检查并四舍五入坐标
+        try {
+          const roundedCoords = roundCoord(f.geometry.coordinates);
+          
+          // 验证四舍五入后的坐标是否有效
+          const isValid = (coord) => {
+            if (Array.isArray(coord)) {
+              if (coord.length === 2 && typeof coord[0] === 'number' && typeof coord[1] === 'number') {
+                return !isNaN(coord[0]) && !isNaN(coord[1]) && 
+                       Math.abs(coord[0]) <= 180 && Math.abs(coord[1]) <= 90;
+              }
+              return coord.every(isValid);
+            }
+            return false;
+          };
+
+          if (!isValid(roundedCoords)) {
+            if (index < 3) console.warn(`[Layer Validation] Invalid coords at index ${index}`);
+            return null;
+          }
+
+          return {
+            ...f,
+            geometry: {
+              ...f.geometry,
+              coordinates: roundedCoords
+            }
+          };
+        } catch (e) {
+          if (index < 3) console.warn(`[Layer Validation] Error processing feature ${index}:`, e);
+          return null;
+        }
+      }).filter(f => f !== null);
+
+      console.log(`[Layer Render] Valid features: ${validFeatures.length} / ${rawData.features.length}`);
+
+      if (validFeatures.length === 0) {
+        console.warn('[Layer Render] No valid features to render');
+        return;
+      }
+
+      // 构造清洗后的 GeoJSON
+      const data = {
+        type: 'FeatureCollection',
+        features: validFeatures
+      };
+      
+      const sourceId = `${type}-source`;
+      const layerId = `${type}-fill`;
+      
+      // 1. 找到数值字段
+      const firstProps = data.features[0].properties;
+      
+      let valueField = 'value'; // 新接口返回的字段名
+      
+      console.log(`[Layer Render] Using field '${valueField}' for ${type}`);
+      console.log(`[Layer Render] Sample properties:`, firstProps);
+      
+      // 计算 min/max 用于权重映射
+      let min = Infinity, max = -Infinity;
+      let validCount = 0;
+      data.features.forEach(f => {
+        const v = f.properties[valueField];
+        if (typeof v === 'number' && !isNaN(v) && isFinite(v)) {
+          if (v < min) min = v;
+          if (v > max) max = v;
+          validCount++;
+        }
+      });
+      
+      console.log(`[Layer Render] Valid values: ${validCount} / ${data.features.length}`);
+      console.log(`[Layer Render] ${type} value range: [${min}, ${max}]`);
+      
+      if (validCount === 0) {
+        console.warn('[Layer Render] No valid property values found');
+        return;
+      }
+      
+      // 避免 min === max
+      if (min === max) {
+        min = min - 1;
+        max = max + 1;
+      }
+      
+      // API 已经返回点数据，直接使用
+      console.log(`[Layer Render] Using ${data.features.length} heatpoints directly from API`);
+      
+      // 为每个点添加 value 属性用于热力图权重
+      data.features.forEach(f => {
+        if (!f.properties.value && f.properties[valueField]) {
+          f.properties.value = f.properties[valueField];
+        }
+      });
+      
+      // 2. 添加 Source
+      if (this.map.getSource(sourceId)) {
+         this.map.getSource(sourceId).setData(data);
+      } else {
+        this.map.addSource(sourceId, {
+          type: 'geojson',
+          data: data
+        });
+      }
+      
+      // 3. 添加 Heatmap Layer (强制重新创建)
+      if (this.map.getLayer(layerId)) {
+        console.log(`[Layer Render] Removing existing layer: ${layerId}`);
+        this.map.removeLayer(layerId);
+      }
+      
+      console.log(`[Layer Render] Adding heatmap layer: ${layerId}`);
+      
+      // 定义热力图颜色
+      let heatmapColor;
+      if (type === 'carbon') {
+        // 碳排放: 绿 -> 黄 -> 橙 -> 红
+        heatmapColor = [
+          'interpolate',
+          ['linear'],
+          ['heatmap-density'],
+          0, 'rgba(0, 255, 0, 0)',      // 透明
+          0.2, 'rgb(0, 255, 0)',        // 绿色
+          0.4, 'rgb(127, 255, 0)',      // 浅绿
+          0.6, 'rgb(255, 255, 0)',      // 黄色
+          0.8, 'rgb(255, 140, 0)',      // 橙色
+          1, 'rgb(255, 0, 0)'           // 红色
+        ];
+      } else {
+        // 温度: 蓝 -> 青 -> 黄 -> 橙 -> 红
+        heatmapColor = [
+          'interpolate',
+          ['linear'],
+          ['heatmap-density'],
+          0, 'rgba(0, 0, 255, 0)',
+          0.2, 'rgb(0, 0, 255)',
+          0.4, 'rgb(0, 255, 255)',
+          0.6, 'rgb(255, 255, 0)',
+          0.8, 'rgb(255, 140, 0)',
+          1, 'rgb(255, 0, 0)'
+        ];
+      }
+      
+      this.map.addLayer({
+        id: layerId,
+        type: 'heatmap',
+        source: sourceId,
+        paint: {
+          // 热力图权重基于碳排放值（形成"山峰"效果）
+          'heatmap-weight': [
+            'interpolate',
+            ['linear'],
+            ['get', 'value'],
+            min, 0,    // 最低值权重为0
+            max, 1     // 最高值权重为1
+          ],
+          // 热力图强度（提高以显示明显的峰值）
+          'heatmap-intensity': [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            0, 1,
+            9, 3
+          ],
+          // 热力图颜色
+          'heatmap-color': heatmapColor,
+          // 热力图半径（适中）
+          'heatmap-radius': [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            0, 5,     // 缩小时半径5像素
+            5, 12,    // 中等缩放12像素
+            9, 20     // 放大时半径20像素
+          ],
+          // 热力图透明度
+          'heatmap-opacity': 0.8
+        }
+      });
+      
+      console.log(`[Layer Render] Heatmap layer added successfully`);
+      
+      // 验证图层是否成功添加
+      const layer = this.map.getLayer(layerId);
+      const source = this.map.getSource(sourceId);
+      console.log(`[Layer Render] Verification - Layer exists: ${!!layer}, Source exists: ${!!source}`);
+      if (layer) {
+        console.log(`[Layer Render] Layer visibility:`, this.map.getLayoutProperty(layerId, 'visibility'));
+        console.log(`[Layer Render] Layer paint:`, this.map.getPaintProperty(layerId, 'fill-color'));
+      }
     }
   }
 }
@@ -1854,6 +2209,121 @@ export default {
   position: relative;
   overflow: hidden;
 }
+
+.panel-glow {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: radial-gradient(circle at center, rgba(0, 200, 255, 0.15), transparent 70%);
+  animation: glow-pulse 3s infinite ease-in-out;
+  pointer-events: none;
+}
+
+/* 图层控制面板样式 */
+.layer-control-panel {
+  position: absolute;
+  bottom: 5px;
+  left: 5px;
+  z-index: 1000;
+}
+
+.layer-buttons {
+  display: flex;
+  flex-direction: row;
+  gap: 10px;
+}
+
+.layer-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 24px;
+  background: rgba(2, 6, 23, 0.85);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 8px;
+  color: #94a3b8;
+  font-family: 'Inter', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  backdrop-filter: blur(8px);
+  overflow: hidden;
+  text-align: left;
+  min-width: auto;
+}
+
+.layer-btn:hover {
+  background: rgba(30, 41, 59, 0.9);
+  border-color: rgba(56, 189, 248, 0.4);
+  color: #e2e8f0;
+  transform: translateX(2px);
+}
+
+.layer-btn.active {
+  background: rgba(15, 23, 42, 0.95);
+  border-color: #38bdf8;
+  color: #38bdf8;
+  box-shadow: 0 0 15px rgba(56, 189, 248, 0.15);
+}
+
+.layer-indicator {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: #38bdf8;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.layer-btn.active .layer-indicator {
+  opacity: 1;
+}
+
+.layer-icon {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #64748b;
+  transition: background-color 0.3s ease;
+}
+
+.layer-btn.active .layer-icon {
+  background-color: #38bdf8;
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.6);
+}
+
+/* 针对特定图层的激活颜色 */
+.layer-btn.active:nth-child(1) .layer-icon { /* 碳排放 */
+  background-color: #52c41a;
+  box-shadow: 0 0 8px rgba(82, 196, 26, 0.6);
+}
+.layer-btn.active:nth-child(1) {
+  border-color: #52c41a;
+  color: #52c41a;
+}
+.layer-btn.active:nth-child(1) .layer-indicator {
+  background: #52c41a;
+}
+
+.layer-btn.active:nth-child(2) .layer-icon { /* 温度 */
+  background-color: #ff4d4f;
+  box-shadow: 0 0 8px rgba(255, 77, 79, 0.6);
+}
+.layer-btn.active:nth-child(2) {
+  border-color: #ff4d4f;
+  color: #ff4d4f;
+}
+.layer-btn.active:nth-child(2) .layer-indicator {
+  background: #ff4d4f;
+}
+
 
 /* 光束流动动画效果 */
 .label-line::after {

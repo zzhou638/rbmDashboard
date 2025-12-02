@@ -166,6 +166,8 @@ export default {
       chatInput: '',
       showChatPanel: false,
       chatMessages: [],
+      useLanEndpoint: true, // 默认使用局域网端点
+      lanEndpointChecked: false, // 是否已检查局域网端点
       leftPanels: [
         { title: '数据面板1', placeholder: '可视化数据区域' },
         { title: '数据面板2', placeholder: '可视化数据区域' },
@@ -222,8 +224,28 @@ export default {
         console.error('Failed to parse userInfo', e)
       }
     }
+    // 检查局域网端点是否可用
+    this.checkLanEndpoint()
   },
   methods: {
+    // 检查局域网端点是否可用
+    checkLanEndpoint() {
+      const lanUrl = 'http://10.4.183.186:8000/api/agent'
+      // 使用 HEAD 请求或 GET 请求来检测端点是否可用
+      axios.get(lanUrl, { timeout: 2000 })
+        .then(() => {
+          console.log('[Chatbox] LAN endpoint is available')
+          this.useLanEndpoint = true
+        })
+        .catch(() => {
+          console.log('[Chatbox] LAN endpoint is NOT available, falling back to API')
+          this.useLanEndpoint = false
+        })
+        .finally(() => {
+          this.lanEndpointChecked = true
+        })
+    },
+    
     onSendChat() {
       if (!this.chatInput || !this.chatInput.trim()) return
       const text = this.chatInput.trim()
@@ -239,8 +261,30 @@ export default {
       this.chatMessages.push(placeholder)
       this.$nextTick(() => this.scrollChatToBottom())
 
-      // 发送到指定 AI Agent 接口
-      axios.post('http://10.4.183.186:8000/api/agent', { query: text }, { timeout: 300000 })
+      // 根据端点可用性选择请求地址和参数
+      let requestPromise
+      if (this.useLanEndpoint) {
+        // 使用局域网端点
+        console.log('[Chatbox] Using LAN endpoint')
+        requestPromise = axios.post('http://10.4.183.186:8000/api/agent', { query: text }, { timeout: 300000 })
+      } else {
+        // 使用 API 端点，支持多轮对话
+        console.log('[Chatbox] Using API endpoint with history')
+        // 构建历史记录（排除当前用户消息和占位符）
+        const history = this.chatMessages
+          .filter(m => m !== userMsg && m !== placeholder)
+          .map(m => ({ role: m.role, content: m.content }))
+        
+        // 只有在有历史记录时才传递 history 参数
+        const payload = { message: text }
+        if (history.length > 0) {
+          payload.history = history
+        }
+        
+        requestPromise = axios.post('/api/agent/chat', payload, { timeout: 300000 })
+      }
+
+      requestPromise
         .then(res => {
           // 移除占位回复并推入真实回复
           const idx = this.chatMessages.indexOf(placeholder)
@@ -345,6 +389,8 @@ export default {
     },
     closeChatPanel() {
       this.showChatPanel = false
+      // 清除历史消息，下次打开时重新开始新对话
+      this.chatMessages = []
     },
     handleLogout() {
       // 清除用户信息
