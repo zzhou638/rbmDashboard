@@ -147,6 +147,7 @@ import AverageTemperatureLine from '@/components/AverageTemperatureLine.vue'
 import EsgReportCard from '@/components/EsgReportCard.vue'
 import GreenFinanceInvestimentTrend from '@/components/GreenFinanceInvestimentTrend.vue'
 import axios from 'axios'
+import { http } from '@/api/api.js'
 export default {
   name: 'HomePage',
   components: {
@@ -281,7 +282,8 @@ export default {
           payload.history = history
         }
         
-        requestPromise = axios.post('/api/agent/chat', payload, { timeout: 300000 })
+        // 使用配置的 http 客户端，它会自动添加正确的 baseURL
+        requestPromise = http.post('agent/chat', payload, { timeout: 300000 })
       }
 
       requestPromise
