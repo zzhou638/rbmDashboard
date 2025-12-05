@@ -128,7 +128,7 @@ export default {
       }
       return value
     },
-    async show(factoryUuid) {
+    async show(identifier) {
       this.position = { x: window.innerWidth / 2, y: window.innerHeight / 2 }
       this.visible = true
       this.loading = true
@@ -136,10 +136,25 @@ export default {
       this.factoryInfo = null
       
       try {
-        console.log('[FactoryInfoCard] 查询工厂:', factoryUuid)
+        console.log('[FactoryInfoCard] 查询工厂:', identifier)
         
-        // 使用新的 GET /api/factories/detail/{uuid} 接口
-        const response = await http.get(`factories/detail/${factoryUuid}`)
+        let response
+        
+        // 判断是UUID还是名称
+        // UUID格式通常是36个字符，包含连字符，例如: 550e8400-e29b-41d4-a716-446655440000
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier)
+        
+        if (isUUID) {
+          // 使用UUID查询（点图层）
+          console.log('[FactoryInfoCard] 使用UUID查询')
+          response = await http.get(`factories/detail/${identifier}`)
+        } else {
+          // 使用名称查询（3D建筑图层）
+          console.log('[FactoryInfoCard] 使用名称查询')
+          response = await http.get('factories/by-name', {
+            params: { name: identifier }
+          })
+        }
         
         if (response.data) {
           this.factoryInfo = response.data

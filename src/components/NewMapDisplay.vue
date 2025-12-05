@@ -53,6 +53,29 @@
         </li>
       </ul>
     </div>
+    
+    <!-- 底图切换按钮（仅在3D模式显示，右上角） -->
+    <div class="basemap-toggle-panel" v-if="is3DMode">
+      <div class="basemap-segmented-control">
+        <div 
+          class="segment-option" 
+          :class="{ active: baseMapType === 'satellite' }"
+          @click="setBaseMapType('satellite')"
+        >
+          <span class="segment-icon">🛰️</span>
+          <span class="segment-text">卫星</span>
+        </div>
+        <div 
+          class="segment-option" 
+          :class="{ active: baseMapType === 'streets' }"
+          @click="setBaseMapType('streets')"
+        >
+          <span class="segment-icon">🗺️</span>
+          <span class="segment-text">街道</span>
+        </div>
+        <div class="segment-glider" :class="baseMapType"></div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -63,6 +86,7 @@ import bus from '@/bus'
 import FactoryInfoCard from './FactoryInfoCard.vue'
 import CarbonEmissionCard from './CarbonEmissionCard.vue'
 import CompanyInfoCard from './CompanyInfoCard.vue'
+import { PUBLIC_KEY } from '@/public_token/mapboxgl.js'
 
 export default {
   name: 'NewMapDisplay',
@@ -108,7 +132,8 @@ export default {
       layers: [
         { value: 'carbon', label: '碳排放', iconClass: 'icon-carbon' },
         { value: 'temperature', label: '温度', iconClass: 'icon-temp' }
-      ]
+      ],
+      baseMapType: 'satellite' // 底图类型: 'satellite' 或 'streets'
     }
   },
   watch: {
@@ -166,8 +191,7 @@ export default {
   },
   methods: {
     initMap() {
-      const accessToken = "pk.eyJ1IjoiemhvdWdpcyIsImEiOiJjbWhpc2EyMHcwd3F4MmtwbjNhejV4MmIyIn0.Lu4eDBF_hFOON7q6FuEenQ"
-      mapboxgl.accessToken = accessToken
+      mapboxgl.accessToken = PUBLIC_KEY
       const map = new mapboxgl.Map({
         container: this.$refs.mapContainer,
         // style: 'mapbox://styles/mapbox/dark-v11',
@@ -548,19 +572,19 @@ export default {
         })
 
       // GBA面要素
-        this.map.addLayer({
+      this.map.addLayer({
         id: "gba-fill",
         type: "fill",
-          source: sourceId,
+        source: sourceId,
         filter: ['any',
           ['==', ['geometry-type'], 'Polygon'],
           ['==', ['geometry-type'], 'MultiPolygon']
         ],
-          paint: {
+        paint: {
           'fill-color': '#62b1ff',
           'fill-opacity': 0.25
-          }
-        })
+        }
+      })
 
       // GBA线要素
         this.map.addLayer({
@@ -617,8 +641,8 @@ export default {
         })
       }
       
-      // 在市级模式下渲染建筑物 3D 图层（如果数据已加载且处于3D模式）
-      if (this.currentMode === 'city' && this.is3DMode && this.buildingData && this.buildingData.features && this.buildingData.features.length > 0) {
+      // 在市级或区级模式下渲染建筑物 3D 图层（如果数据已加载且处于3D模式）
+      if ((this.currentMode === 'city' || this.currentMode === 'district') && this.is3DMode && this.buildingData && this.buildingData.features && this.buildingData.features.length > 0) {
         console.log('[renderBoundary] 建筑物数据已存在且处于3D模式，开始渲染...')
         this.renderBuildings()
       } else {
@@ -720,8 +744,39 @@ export default {
           this.map.setLayoutProperty('all-points', 'visibility', 'none')
         }
         
-        // 市级模式显示建筑物，其他模式隐藏
-        if (mode === 'city') {
+        // 检查是否重新点击了当前模式（市级或区级）
+        const isReClickingSameMode = this.currentMode === mode && (mode === 'city' || mode === 'district')
+        
+        // 如果重新点击相同模式且处于3D模式，退出3D模式
+        if (isReClickingSameMode && this.is3DMode) {
+          console.log('[Mode Switch] 重新点击相同模式，退出3D模式')
+          this.is3DMode = false
+          this.clearBuildingMarkers()
+          
+          // 移除 Mapbox 底图图层
+          this.removeMapboxBaseLayer()
+          
+          // 恢复边界填充图层的显示
+          if (this.map.getLayer('gba-fill')) {
+            this.map.setLayoutProperty('gba-fill', 'visibility', 'visible')
+          }
+          
+          // 隐藏建筑物
+          if (this.map.getLayer('buildings-layer')) {
+            this.map.setLayoutProperty('buildings-layer', 'visibility', 'none')
+          }
+          
+          // 飞回2D视图
+          this.map.flyTo({
+            pitch: 0,
+            bearing: 0,
+            zoom: 9,
+            duration: 1500
+          })
+        }
+        
+        // 市级和区级模式显示建筑物，其他模式隐藏
+        if (mode === 'city' || mode === 'district') {
           // 重新加载建筑物数据，防止渲染黑屏问题
           this.fetchBuildingData()
           
@@ -733,9 +788,18 @@ export default {
             this.updateVisibleMarkers()
           }
         } else {
-          // 切换到非市级模式，退出3D模式
+          // 切换到地点模式，退出3D模式
           this.is3DMode = false
           this.clearBuildingMarkers()
+          
+          // 移除 Mapbox 底图图层
+          this.removeMapboxBaseLayer()
+          
+          // 恢复边界填充图层的显示
+          if (this.map.getLayer('gba-fill')) {
+            this.map.setLayoutProperty('gba-fill', 'visibility', 'visible')
+          }
+          
           this.map.flyTo({
             pitch: 0,
             zoom: 9,
@@ -777,13 +841,13 @@ export default {
           if (name) this.$refs.companyCard.show(name);
         }
       } else if (type === 'factory') {
-        // Try multiple possible field names for UUID
-        const uuid = properties.pt_uuid || properties.uuid || properties.factory_uuid || properties.factory_uu;
-        if (uuid) {
-          console.log('[Building Click] Opening Factory Card with UUID:', uuid);
-          this.$refs.factoryCard.show(uuid);
+        // 使用工厂名称查询
+        const factoryName = properties.pt_name || properties.name;
+        if (factoryName) {
+          console.log('[Building Click] Opening Factory Card with Name:', factoryName);
+          this.$refs.factoryCard.show(factoryName);
         } else {
-           console.warn('[Building Click] Factory building missing pt_uuid/uuid', properties);
+          console.warn('[Building Click] Factory building missing pt_name/name', properties);
         }
       } else {
         // Fallback for other types or unknown types
@@ -879,6 +943,12 @@ export default {
               // 如果是市级模式，且未处于3D模式，点击城市进入 3D 模式
               if (this.currentMode === 'city' && !this.is3DMode) {
                 console.log('[Map Identify] 点击城市，准备进入3D模式:', f.properties);
+                this.enter3DMode(f);
+              }
+              
+              // 如果是区级模式，且未处于3D模式，点击区进入 3D 模式
+              if (this.currentMode === 'district' && !this.is3DMode) {
+                console.log('[Map Identify] 点击区，准备进入3D模式:', f.properties);
                 this.enter3DMode(f);
               }
 
@@ -1332,6 +1402,104 @@ export default {
       })
     },
     
+    // 添加 Mapbox 底图图层（作为 raster 图层）
+    addMapboxBaseLayer(type) {
+      if (!this.map) return
+      
+      // 如果没有指定类型，使用当前类型
+      const mapType = type || this.baseMapType
+      
+      const sourceId = 'mapbox-base-source'
+      const layerId = 'mapbox-base-layer'
+      
+      // 如果已存在，先移除
+      if (this.map.getLayer(layerId)) {
+        this.map.removeLayer(layerId)
+      }
+      if (this.map.getSource(sourceId)) {
+        this.map.removeSource(sourceId)
+      }
+      
+      console.log(`[Base Map] 添加 Mapbox 底图图层: ${mapType}`)
+      
+      // 根据类型选择不同的 Mapbox 源
+      let sourceConfig
+      if (mapType === 'satellite') {
+        // 卫星图层
+        sourceConfig = {
+          type: 'raster',
+          url: 'mapbox://mapbox.satellite',
+          tileSize: 256
+        }
+      } else {
+        // 街道图层 - 使用 Mapbox Dark 黑暗风格栅格瓦片
+        sourceConfig = {
+          type: 'raster',
+          tiles: [
+            'https://api.mapbox.com/styles/v1/mapbox/dark-v11/tiles/{z}/{x}/{y}?access_token=' + PUBLIC_KEY
+          ],
+          tileSize: 512
+        }
+      }
+      
+      this.map.addSource(sourceId, sourceConfig)
+      
+      this.map.addLayer({
+        id: layerId,
+        type: 'raster',
+        source: sourceId,
+        paint: {
+          'raster-opacity': mapType === 'satellite' ? 1.0 : 0.8  // 卫星100%不透明，街道80%
+        }
+      }, 'gba-fill')  // 插入到边界填充图层之前（最底层）
+      
+      console.log('[Base Map] Mapbox 底图图层添加完成')
+      
+      // 确保建筑物图层在最顶层
+      if (this.map.getLayer('buildings-layer')) {
+        this.map.moveLayer('buildings-layer')
+        console.log('[Base Map] 已将建筑物图层移至最顶层')
+      }
+    },
+    
+    // 切换底图类型
+    toggleBaseMapType() {
+      const newType = this.baseMapType === 'satellite' ? 'streets' : 'satellite'
+      this.setBaseMapType(newType)
+    },
+    
+    // 设置底图类型
+    setBaseMapType(type) {
+      if (this.baseMapType === type) return
+      
+      this.baseMapType = type
+      console.log(`[Base Map] 切换底图类型到: ${type}`)
+      
+      // 重新添加底图图层
+      if (this.is3DMode) {
+        this.addMapboxBaseLayer(type)
+      }
+    },
+    
+    // 移除 Mapbox 底图图层
+    removeMapboxBaseLayer() {
+      if (!this.map) return
+      
+      const sourceId = 'mapbox-base-source'
+      const layerId = 'mapbox-base-layer'
+      
+      console.log('[Base Map] 移除 Mapbox 底图图层')
+      
+      if (this.map.getLayer(layerId)) {
+        this.map.removeLayer(layerId)
+      }
+      if (this.map.getSource(sourceId)) {
+        this.map.removeSource(sourceId)
+      }
+      
+      console.log('[Base Map] Mapbox 底图图层已移除')
+    },
+    
     // 进入3D模式逻辑
     enter3DMode(cityFeature) {
       if (!this.buildingData || !this.buildingData.features) {
@@ -1340,6 +1508,14 @@ export default {
       }
       
       this.is3DMode = true;
+      
+      // 0. 添加 Mapbox 底图图层
+      this.addMapboxBaseLayer();
+      
+      // 0.1 隐藏边界填充图层，避免遮挡卫星底图
+      if (this.map.getLayer('gba-fill')) {
+        this.map.setLayoutProperty('gba-fill', 'visibility', 'none');
+      }
       
       // 1. 渲染建筑物（如果还没渲染）
       this.renderBuildings();
@@ -1406,7 +1582,7 @@ export default {
       // 监听地图移动事件，动态更新
       if (!this._markerUpdateListener) {
         this._markerUpdateListener = () => {
-          if (this.is3DMode && this.currentMode === 'city') {
+          if (this.is3DMode && (this.currentMode === 'city' || this.currentMode === 'district')) {
             this.updateVisibleMarkers()
           }
         }
@@ -2375,5 +2551,76 @@ export default {
 @keyframes ripple {
   0% { width: 100%; height: 100%; opacity: 1; }
   100% { width: 300%; height: 300%; opacity: 0; }
+}
+
+/* 底图切换分段控制器样式 */
+.basemap-toggle-panel {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  z-index: 10;
+}
+
+.basemap-segmented-control {
+  display: flex;
+  position: relative;
+  background: rgba(2, 6, 23, 0.6);
+  backdrop-filter: blur(12px);
+  padding: 4px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.segment-option {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  cursor: pointer;
+  color: #94a3b8;
+  font-size: 14px;
+  font-weight: 500;
+  transition: color 0.3s ease;
+  user-select: none;
+}
+
+.segment-option:hover {
+  color: #e2e8f0;
+}
+
+.segment-option.active {
+  color: #fff;
+  text-shadow: 0 0 8px rgba(255, 255, 255, 0.5);
+}
+
+.segment-icon {
+  font-size: 16px;
+}
+
+/* 滑动指示器 */
+.segment-glider {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  width: calc(50% - 4px);
+  background: rgba(56, 189, 248, 0.2);
+  border: 1px solid rgba(56, 189, 248, 0.5);
+  border-radius: 8px;
+  z-index: 1;
+  transition: transform 0.3s cubic-bezier(0.4, 0.0, 0.2, 1);
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.3);
+}
+
+/* 根据状态移动滑块 */
+.segment-glider.streets {
+  transform: translateX(100%);
+}
+
+.segment-glider.satellite {
+  transform: translateX(0);
 }
 </style>
