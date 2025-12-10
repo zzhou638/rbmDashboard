@@ -135,6 +135,19 @@
         </aside>
       </div>
     </main>
+    
+    <!-- 全局 Loading 遮罩 -->
+    <div class="global-loading-mask" v-if="isLoading">
+      <div class="loading-content">
+        <div class="loading-spinner">
+          <div class="spinner-ring"></div>
+          <div class="spinner-ring"></div>
+          <div class="spinner-ring"></div>
+        </div>
+        <div class="loading-text">{{ loadingText }}</div>
+        <div class="loading-progress">{{ loadingProgress }}</div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -215,7 +228,13 @@ export default {
         { year: 2023, value: 23.5 }
       ],
       // 右侧第三个数据框：AI ESG 摘要文本
-      esgReportSummary: `本报告基于企业披露与第三方数据生成，涵盖环境（E）、社会（S）与治理（G）。\n\n环境：碳排放强度同比下降，可再生能源占比提升；水资源使用效率与固废回收率改善。\n社会：员工安全管理稳定运行，供应链合规覆盖提升；公益投入增强，促进社区共建。\n治理：董事会多元化程度提高，信息披露及时；合规与反腐机制持续完善。\n\n总体：ESG 表现稳中向好，建议继续推进低碳转型，强化供应链尽责管理，并完善 TCFD 相关披露。`
+      esgReportSummary: `本报告基于企业披露与第三方数据生成，涵盖环境（E）、社会（S）与治理（G）。\n\n环境：碳排放强度同比下降，可再生能源占比提升；水资源使用效率与固废回收率改善。\n社会：员工安全管理稳定运行，供应链合规覆盖提升；公益投入增强，促进社区共建。\n治理：董事会多元化程度提高，信息披露及时；合规与反腐机制持续完善。\n\n总体：ESG 表现稳中向好，建议继续推进低碳转型，强化供应链尽责管理，并完善 TCFD 相关披露。`,
+      
+      // 全局 Loading 状态
+      isLoading: true,
+      loadingText: '正在加载数据...',
+      loadingProgress: '0%',
+      loadingTimer: null
     }
   },
   mounted() {
@@ -229,6 +248,9 @@ export default {
     }
     // 检查局域网端点是否可用
     this.checkLanEndpoint()
+    
+    // 启动loading进度模拟
+    this.startLoadingProgress()
   },
   methods: {
     // 处理聊天输入框的键盘事件
@@ -528,6 +550,42 @@ export default {
       localStorage.removeItem('userInfo')
       // 跳转到登录页
       this.$router.push('/login')
+    },
+    
+    // 启动loading进度模拟
+    startLoadingProgress() {
+      let progress = 0
+      const messages = [
+        '正在加载地图组件...',
+        '正在加载数据面板...',
+        '正在初始化图表...',
+        '加载完成'
+      ]
+      
+      this.loadingTimer = setInterval(() => {
+        progress += 25
+        this.loadingProgress = `${progress}%`
+        
+        const messageIndex = Math.floor(progress / 25) - 1
+        if (messageIndex >= 0 && messageIndex < messages.length) {
+          this.loadingText = messages[messageIndex]
+        }
+        
+        if (progress >= 100) {
+          clearInterval(this.loadingTimer)
+          setTimeout(() => {
+            this.isLoading = false
+            console.log('[Global Loading] 页面加载完成')
+          }, 300)
+        }
+      }, 750) // 每750ms增加25%，总共3秒
+    }
+  },
+  
+  beforeDestroy() {
+    // 清除loading定时器
+    if (this.loadingTimer) {
+      clearInterval(this.loadingTimer)
     }
   }
 }
@@ -1742,5 +1800,104 @@ export default {
   border-radius: 3px;
   font-family: monospace;
   color: #ffeb3b;
+}
+
+/* 全局 Loading 遮罩样式 */
+.global-loading-mask {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.98);
+  backdrop-filter: blur(10px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  animation: fadeIn 0.3s ease-in-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.loading-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 32px;
+}
+
+.loading-spinner {
+  position: relative;
+  width: 100px;
+  height: 100px;
+}
+
+.spinner-ring {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  border: 4px solid transparent;
+  border-top-color: #66ddff;
+  border-radius: 50%;
+  animation: spin 1.5s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+}
+
+.spinner-ring:nth-child(1) {
+  animation-delay: -0.45s;
+  border-top-color: #66ddff;
+  box-shadow: 0 0 20px rgba(102, 221, 255, 0.5);
+}
+
+.spinner-ring:nth-child(2) {
+  animation-delay: -0.3s;
+  border-top-color: #4CC9F0;
+  width: 75%;
+  height: 75%;
+  top: 12.5%;
+  left: 12.5%;
+  box-shadow: 0 0 15px rgba(76, 201, 240, 0.4);
+}
+
+.spinner-ring:nth-child(3) {
+  animation-delay: -0.15s;
+  border-top-color: #38bdf8;
+  width: 50%;
+  height: 50%;
+  top: 25%;
+  left: 25%;
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.3);
+}
+
+@keyframes spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.loading-text {
+  font-size: 20px;
+  font-weight: 600;
+  color: #66ddff;
+  text-align: center;
+  letter-spacing: 1px;
+  text-shadow: 0 0 10px rgba(102, 221, 255, 0.5);
+}
+
+.loading-progress {
+  font-size: 16px;
+  color: #4CC9F0;
+  font-weight: 500;
+  letter-spacing: 2px;
 }
 </style>

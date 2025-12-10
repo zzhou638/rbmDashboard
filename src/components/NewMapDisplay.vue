@@ -21,7 +21,7 @@
     </div>
 
     <!-- 图层控制面板 (左上角) -->
-    <div class="layer-control-panel">
+    <div class="layer-control-panel" v-if="currentMode !== 'location'">
       <div class="layer-buttons">
         <button 
           v-for="layer in layers" 
@@ -76,6 +76,7 @@
         <div class="segment-glider" :class="baseMapType"></div>
       </div>
     </div>
+
   </div>
 </template>
 
@@ -206,6 +207,7 @@ export default {
       map.on('load', () => {
         this.mapLoaded = true
         console.log('[Map] 地图加载完成')
+        
         // 渲染所有点位（统一图层，根据type动态设置颜色）
         if (this.allPointsData) {
           this.renderAllPoints()
@@ -228,6 +230,7 @@ export default {
           this.boundary = res.data
           this.labelFeatures = this.buildLabelPoints(res.data, scale)
           this.updateOverviewCounts(res.data)
+
           if (this.mapLoaded) {
             // 确保点位在边界之前渲染
             if (this.allPointsData && !this.map.getLayer('all-points')) {
@@ -287,7 +290,7 @@ export default {
           }
 
           this.allPointsData = allData
-          
+
           // 统计各类型数量
           const typeCounts = {}
           allData.features.forEach(feature => {
@@ -714,12 +717,20 @@ export default {
         this.clearBuildingMarkers()
         this.is3DMode = false
 
-        // 2. 隐藏所有点位（防止在 3D 视角下显示）
+        // 2. 添加卫星底图图层
+        this.addMapboxBaseLayer('satellite')
+        
+        // 3. 隐藏边界填充图层，避免遮挡卫星底图
+        if (this.map.getLayer('gba-fill')) {
+          this.map.setLayoutProperty('gba-fill', 'visibility', 'none')
+        }
+
+        // 4. 隐藏所有点位（防止在 3D 视角下显示）
         if (this.map.getLayer('all-points')) {
           this.map.setLayoutProperty('all-points', 'visibility', 'none')
         }
 
-        // 3. 飞向 2D 视图
+        // 5. 飞向 2D 视图
         this.map.flyTo({
           pitch: 0,
           bearing: 0,
@@ -727,7 +738,7 @@ export default {
           duration: 1500
         })
 
-        // 4. 动画结束后显示点位
+        // 6. 动画结束后显示点位
         this.map.once('moveend', () => {
           if (this.currentMode === 'location') {
              if (this.map.getLayer('all-points')) {
@@ -744,6 +755,14 @@ export default {
           this.map.setLayoutProperty('all-points', 'visibility', 'none')
         }
         
+        // 移除卫星底图图层(如果从地点模式切换过来)
+        this.removeMapboxBaseLayer()
+        
+        // 恢复边界填充图层的显示
+        if (this.map.getLayer('gba-fill')) {
+          this.map.setLayoutProperty('gba-fill', 'visibility', 'visible')
+        }
+        
         // 检查是否重新点击了当前模式（市级或区级）
         const isReClickingSameMode = this.currentMode === mode && (mode === 'city' || mode === 'district')
         
@@ -752,14 +771,6 @@ export default {
           console.log('[Mode Switch] 重新点击相同模式，退出3D模式')
           this.is3DMode = false
           this.clearBuildingMarkers()
-          
-          // 移除 Mapbox 底图图层
-          this.removeMapboxBaseLayer()
-          
-          // 恢复边界填充图层的显示
-          if (this.map.getLayer('gba-fill')) {
-            this.map.setLayoutProperty('gba-fill', 'visibility', 'visible')
-          }
           
           // 隐藏建筑物
           if (this.map.getLayer('buildings-layer')) {
@@ -788,17 +799,9 @@ export default {
             this.updateVisibleMarkers()
           }
         } else {
-          // 切换到地点模式，退出3D模式
+          // 其他非location模式，确保建筑物隐藏
           this.is3DMode = false
           this.clearBuildingMarkers()
-          
-          // 移除 Mapbox 底图图层
-          this.removeMapboxBaseLayer()
-          
-          // 恢复边界填充图层的显示
-          if (this.map.getLayer('gba-fill')) {
-            this.map.setLayoutProperty('gba-fill', 'visibility', 'visible')
-          }
           
           this.map.flyTo({
             pitch: 0,
@@ -889,8 +892,14 @@ export default {
             
             // 根据点位类型显示对应的卡片
             if (pointType === 'samplingPoint') {
-              const screenPos = this.getScreenPosition(px)
-              this.$refs.carbonCard && this.$refs.carbonCard.show && this.$refs.carbonCard.show(f.properties, screenPos.x, screenPos.y)
+              // 提取采样点的 number 字段
+              const number = f.properties.number || f.properties.Number || f.properties.NUMBER
+              if (number) {
+                console.log('[Map Identify] 采样点 number:', number)
+                this.$refs.carbonCard && this.$refs.carbonCard.show && this.$refs.carbonCard.show(number)
+              } else {
+                console.warn('[Map Identify] 采样点缺少 number 字段', f.properties)
+              }
               return
             } else if (pointType === 'company') {
               const stockName = f.properties.stock_name || f.properties.stockName || f.properties.stock_code;
@@ -1792,6 +1801,22 @@ export default {
         this.activeLayers.push(layerValue);
         console.log(`[Layer Control] Layer activated: ${layerValue}`);
         
+        // 激活图层时放大地图到初始层级+5（9级）
+        if (this.map) {
+          this.map.flyTo({
+            zoom: 9.5,
+            duration: 1500
+          });
+        }
+        
+        // 显示卫星底图
+        this.addMapboxBaseLayer('satellite');
+        
+        // 隐藏边界填充图层，避免遮挡卫星底图
+        if (this.map.getLayer('gba-fill')) {
+          this.map.setLayoutProperty('gba-fill', 'visibility', 'none');
+        }
+        
         // 如果数据未加载，先加载数据
         if (layerValue === 'carbon' && !this.carbonLayerData) {
           this.fetchLayerData('carbon');
@@ -1805,6 +1830,16 @@ export default {
         this.activeLayers.splice(index, 1);
         console.log(`[Layer Control] Layer deactivated: ${layerValue}`);
         this.setLayerVisibility(layerValue, false);
+        
+        // 如果碳排放和温度图层都未激活，移除卫星底图
+        if (!this.activeLayers.includes('carbon') && !this.activeLayers.includes('temperature')) {
+          this.removeMapboxBaseLayer();
+          
+          // 恢复边界填充图层的显示
+          if (this.map.getLayer('gba-fill')) {
+            this.map.setLayoutProperty('gba-fill', 'visibility', 'visible');
+          }
+        }
       }
     },
     fetchLayerData(type) {
@@ -2624,3 +2659,4 @@ export default {
   transform: translateX(0);
 }
 </style>
+

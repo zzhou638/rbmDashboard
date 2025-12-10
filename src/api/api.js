@@ -2,7 +2,7 @@ import axios from 'axios'
 
 const DEFAULT_HOST = process.env.NODE_ENV === 'development'
   ? 'http://localhost:8085'
-  : 'http://www.zhougis.top:8085'
+  : 'https://api.zhougis.app'
 const baseHost = process.env.VUE_APP_API_HOST || DEFAULT_HOST
 const apiPrefix = '/api/'
 const remote_api = `${baseHost}${apiPrefix}`

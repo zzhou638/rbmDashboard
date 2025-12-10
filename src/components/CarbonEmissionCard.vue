@@ -4,39 +4,118 @@
     <div class="carbon-card">
       <div class="card-header">
         <div class="title-group">
-          <span class="chip">碳排放报告</span>
-          <h3 class="card-title">黄鲁山监测点</h3>
-          <p class="card-subtitle">113.5721821°E · 22.7860305°N</p>
+          <span class="chip">碳排放实地考察报告</span>
+          <h3 class="card-title">{{ samplingPointData?.number || '加载中...' }}</h3>
+          <p class="card-subtitle" v-if="samplingPointData?.city">
+            {{ samplingPointData.city }}
+          </p>
+          <p class="card-subtitle" v-if="samplingPointData?.swbType">
+            类型: {{ samplingPointData.swbType }} · 面积: {{ samplingPointData.areaHa }} ha
+          </p>
         </div>
         <button class="close-btn" @click="close">×</button>
       </div>
       <div class="card-body">
-        <div class="photo-wrapper">
-          <img :src="photo" alt="黄鲁山森林公园照片" />
-          <span class="photo-tag">实地照片</span>
+        <div v-if="loading" class="loading-indicator">
+          <div class="loading-spinner"></div>
+          <p>加载中...</p>
         </div>
-
-        <div class="metrics">
-          <div class="metric">
-            <span class="metric-label">温度</span>
-            <span class="metric-value">28.1°C</span>
+        <template v-else-if="samplingPointData">
+          <!-- 基础水质参数 -->
+          <div class="section-title">基础水质参数</div>
+          <div class="metrics-grid">
+            <div class="metric">
+              <span class="metric-label">水温</span>
+              <span class="metric-value">{{ formatValue(samplingPointData.twaterDegC, 2) }}°C</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">pH</span>
+              <span class="metric-value">{{ formatValue(samplingPointData.ph, 2) }}</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">ORP</span>
+              <span class="metric-value">{{ formatValue(samplingPointData.orp, 1) }} mV</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">DO</span>
+              <span class="metric-value">{{ formatValue(samplingPointData.doPpm, 2) }} mg/L</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">电导率</span>
+              <span class="metric-value">{{ formatValue(samplingPointData.conductivityUsCm, 0) }} μS/cm</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">盐度</span>
+              <span class="metric-value">{{ formatValue(samplingPointData.salinity, 2) }} ‰</span>
+            </div>
           </div>
-          <div class="metric">
-            <span class="metric-label">RH</span>
-            <span class="metric-value">88.0%</span>
-          </div>
-          <div class="metric">
-            <span class="metric-label">DP</span>
-            <span class="metric-value">26.0°C</span>
-          </div>
-        </div>
 
+          <!-- 营养盐参数 -->
+          <div class="section-title">营养盐浓度</div>
+          <div class="metrics-grid">
+            <div class="metric">
+              <span class="metric-label">NO₃⁻</span>
+              <span class="metric-value">{{ formatValue(samplingPointData.no3UmolL, 3) }} μmol/L</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">NO₂⁻</span>
+              <span class="metric-value">{{ formatValue(samplingPointData.no2UmolL, 3) }} μmol/L</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">NH₄⁺</span>
+              <span class="metric-value">{{ formatValue(samplingPointData.nh4UmolL, 3) }} μmol/L</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">PO₄³⁻</span>
+              <span class="metric-value">{{ formatValue(samplingPointData.po4UmolL, 3) }} μmol/L</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">SiO₃²⁻</span>
+              <span class="metric-value">{{ formatValue(samplingPointData.sio3UmolL, 2) }} μmol/L</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">叶绿素a</span>
+              <span class="metric-value">{{ formatValue(samplingPointData.chlAUgL, 2) }} μg/L</span>
+            </div>
+          </div>
 
-        <div class="report-block">
-          <div class="report-title">碳排放洞察</div>
-          <p class="report-content">
-            从南沙前往黄鲁山森林公园的出行活动会产生一定的交通碳排放。若选择私家车或网约车，排放量主要来自车辆燃油燃烧过程，平均每公里约排放 0.15–0.20 kg CO₂，当行程约 35–45 公里时，总排放可达到 5–9 kg CO₂。若采用公共交通，如地铁接驳加公交，单位出行的碳排放可降低约 60%–80%，整体排放量通常不足 2 kg CO₂。
-          </p>
+          <!-- 温室气体通量 -->
+          <div class="section-title">温室气体通量</div>
+          <div class="metrics-grid">
+            <div class="metric">
+              <span class="metric-label">CO₂通量</span>
+              <span class="metric-value">{{ formatValue(samplingPointData.fco2GCM2D, 3) }} g/m²/d</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">CH₄通量</span>
+              <span class="metric-value">{{ formatValue(samplingPointData.fch4MmolM2D, 4) }} mmol/m²/d</span>
+            </div>
+            <div class="metric">
+              <span class="metric-label">N₂O通量</span>
+              <span class="metric-value">{{ formatValue(samplingPointData.fn2oMmolM2D, 6) }} mmol/m²/d</span>
+            </div>
+          </div>
+
+          <!-- 诊断信息 -->
+          <div class="report-block" v-if="samplingPointData.diagnosis">
+            <div class="report-title">诊断</div>
+            <p class="report-content">{{ samplingPointData.diagnosis }}</p>
+          </div>
+
+          <!-- 评估信息 -->
+          <div class="report-block" v-if="samplingPointData.evaluation">
+            <div class="report-title">综合评估</div>
+            <p class="report-content">{{ samplingPointData.evaluation }}</p>
+          </div>
+
+          <!-- 采样点照片 (移到最后) -->
+          <div class="photo-wrapper" v-if="samplingPointData.imageBase64">
+            <img :src="getImageSrc(samplingPointData.imageBase64)" :alt="samplingPointData.number + '实地照片'" />
+            <span class="photo-tag">实地照片</span>
+          </div>
+        </template>
+        <div v-else class="error-message">
+          <p>暂无数据</p>
         </div>
       </div>
     </div>
@@ -65,7 +144,9 @@ export default {
       chartData: { years: [], values: [] },
       loading: false,
       currentScopeLabel: DEFAULT_SCOPE.label,
-      currentScopeType: DEFAULT_SCOPE.type
+      currentScopeType: DEFAULT_SCOPE.type,
+      samplingPointData: null, // 存储采样点详细数据
+      samplingPointNumber: null // 存储当前采样点编号
     }
   },
   computed: {
@@ -89,8 +170,15 @@ export default {
     }
   },
   methods: {
-    show() {
+    show(number) {
       this.visible = true
+      this.samplingPointNumber = number
+      
+      // 如果传入了 number，从后端获取详细数据
+      if (number) {
+        this.fetchSamplingPointDetail(number)
+      }
+      
       this.$nextTick(() => {
         this.ensureChartInstance()
         this.renderChart()
@@ -98,6 +186,9 @@ export default {
     },
     close() {
       this.visible = false
+      // 关闭时清空数据
+      this.samplingPointData = null
+      this.samplingPointNumber = null
     },
     handleResize() {
       if (this.chart) {
@@ -246,6 +337,40 @@ export default {
         }
       }
       return null
+    },
+    async fetchSamplingPointDetail(number) {
+      this.loading = true
+      try {
+        console.log('[CarbonEmissionCard] 开始获取采样点数据, number:', number)
+        const res = await http.get('map/sampling-point-detail', { params: { number } })
+        this.samplingPointData = res.data
+        console.log('[CarbonEmissionCard] 采样点数据加载成功:', res.data)
+      } catch (err) {
+        console.error('[CarbonEmissionCard] 获取采样点详细数据失败:', err)
+        this.samplingPointData = null
+      } finally {
+        this.loading = false
+      }
+    },
+    formatValue(value, decimals = 2) {
+      if (value === null || value === undefined || value === '') {
+        return '--'
+      }
+      const num = Number(value)
+      if (isNaN(num)) {
+        return '--'
+      }
+      return num.toFixed(decimals)
+    },
+    getImageSrc(imageData) {
+      if (!imageData) return ''
+      // 如果已经是完整的 data URI，直接返回
+      if (imageData.startsWith('data:image')) {
+        return imageData
+      }
+      // 如果是纯 base64 数据，添加 data URI 前缀
+      // 默认假设是 JPEG 格式，也可以根据实际情况调整
+      return `data:image/jpeg;base64,${imageData}`
     }
   }
 }
@@ -256,8 +381,9 @@ export default {
   position: fixed;
   inset: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
+  padding-top: 12vh;
   z-index: 11000;
 }
 
@@ -276,14 +402,36 @@ export default {
 
 .carbon-card {
   position: relative;
-  width: min(440px, 92vw);
+  width: min(600px, 92vw);
+  max-height: 80vh;
+  overflow-y: auto;
   background: linear-gradient(160deg, rgba(7, 11, 25, 0.96), rgba(14, 40, 68, 0.96));
   border: 1px solid rgba(102, 221, 255, 0.35);
   border-radius: 20px;
   box-shadow: 0 26px 50px rgba(0, 0, 0, 0.55), inset 0 0 30px rgba(30, 144, 255, 0.15);
-  overflow: hidden;
   backdrop-filter: blur(6px);
   animation: popIn 0.25s ease;
+}
+
+/* 自定义滚动条 */
+.carbon-card::-webkit-scrollbar {
+  width: 10px;
+}
+
+.carbon-card::-webkit-scrollbar-track {
+  background: rgba(2, 6, 23, 0.7);
+  border-radius: 5px;
+  margin: 4px 0;
+}
+
+.carbon-card::-webkit-scrollbar-thumb {
+  background: rgba(77, 217, 255, 0.5);
+  border-radius: 5px;
+  border: 2px solid rgba(7, 11, 25, 0.96);
+}
+
+.carbon-card::-webkit-scrollbar-thumb:hover {
+  background: rgba(77, 217, 255, 0.7);
 }
 
 @keyframes popIn {
@@ -304,19 +452,24 @@ export default {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  align-items: center;
 }
 
 .chip {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 4px;
-  padding: 2px 8px;
+  padding: 4px 12px;
   border-radius: 999px;
   border: 1px solid rgba(102, 221, 255, 0.5);
   font-size: 11px;
   letter-spacing: 0.08em;
   color: #9ad7ff;
   text-transform: uppercase;
+  width: fit-content;
+  max-width: 100%;
+  align-self: center;
 }
 
 .card-title {
@@ -368,7 +521,8 @@ export default {
 
 .photo-wrapper img {
   width: 100%;
-  height: 180px;
+  height: auto;
+  aspect-ratio: 4 / 3;
   object-fit: cover;
   display: block;
   filter: saturate(1.1);
@@ -385,6 +539,23 @@ export default {
   background: rgba(255, 255, 255, 0.85);
   border-radius: 999px;
   text-transform: uppercase;
+}
+
+.section-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #4dd9ff;
+  letter-spacing: 0.08em;
+  margin: 8px 0 12px 0;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(77, 217, 255, 0.2);
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 8px;
 }
 
 .metrics {
@@ -501,5 +672,48 @@ export default {
   font-size: 13px;
   color: #cfe5ff;
   text-align: justify;
+}
+
+.loading-indicator {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  color: #9ad7ff;
+}
+
+.loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(77, 217, 255, 0.2);
+  border-top-color: #4dd9ff;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: 12px;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.loading-indicator p {
+  margin: 0;
+  font-size: 14px;
+  color: #8fe4ff;
+}
+
+.error-message {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  color: #7db9ff;
+  text-align: center;
+}
+
+.error-message p {
+  margin: 0;
+  font-size: 14px;
 }
 </style>
