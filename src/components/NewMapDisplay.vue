@@ -77,6 +77,15 @@
       </div>
     </div>
 
+    <!-- Hover Tooltip for City/District Names -->
+    <div 
+      v-if="hoverTooltip.visible" 
+      class="map-hover-tooltip"
+      :style="{ left: hoverTooltip.x + 'px', top: hoverTooltip.y + 'px' }"
+    >
+      {{ hoverTooltip.text }}
+    </div>
+
   </div>
 </template>
 
@@ -134,7 +143,14 @@ export default {
         { value: 'carbon', label: '碳排放', iconClass: 'icon-carbon' },
         { value: 'temperature', label: '温度', iconClass: 'icon-temp' }
       ],
-      baseMapType: 'satellite' // 底图类型: 'satellite' 或 'streets'
+      baseMapType: 'satellite', // 底图类型: 'satellite' 或 'streets'
+      hoverTooltip: {
+        visible: false,
+        x: 0,
+        y: 0,
+        text: ''
+      },
+      hoveredFeatureId: null  // Track currently hovered feature ID
     }
   },
   watch: {
@@ -146,7 +162,15 @@ export default {
       })
     }
   },
-  mounted() {
+  async mounted() {
+    // Preload boundary data for City and District on initialization
+    console.log('[Init] Preloading boundary data for City and District')
+    await Promise.all([
+      this.preloadBoundaryData('City'),
+      this.preloadBoundaryData('District')
+    ])
+    console.log('[Init] Boundary data preloading complete')
+    
     // 空白样式
     const blankStyle = {
       version: 8,
@@ -224,25 +248,88 @@ export default {
       this.$nextTick(() => setTimeout(() => map.resize(), 0))
       this.map = map
     },
+    // Save boundary data to sessionStorage
+    saveBoundaryToCache(scale, data) {
+      try {
+        const key = `boundary_${scale}`
+        sessionStorage.setItem(key, JSON.stringify(data))
+        console.log(`[Cache] Saved ${scale} boundary data to sessionStorage`)
+      } catch (e) {
+        console.warn('[Cache] Failed to save to sessionStorage:', e)
+      }
+    },
+    
+    // Load boundary data from sessionStorage
+    loadBoundaryFromCache(scale) {
+      try {
+        const key = `boundary_${scale}`
+        const cached = sessionStorage.getItem(key)
+        if (cached) {
+          console.log(`[Cache] Loaded ${scale} boundary data from sessionStorage`)
+          return JSON.parse(cached)
+        }
+      } catch (e) {
+        console.warn('[Cache] Failed to load from sessionStorage:', e)
+      }
+      return null
+    },
+    
+    // Preload boundary data for a specific scale
+    async preloadBoundaryData(scale) {
+      console.log('[Preload] Fetching boundary data for scale:', scale)
+      try {
+        const res = await http.get('map/gba_boundary', { params: { scale } })
+        console.log('[Preload] Boundary data received for scale:', scale, 'Features:', res.data?.features?.length)
+        this.saveBoundaryToCache(scale, res.data)
+        return res.data
+      } catch (err) {
+        console.error(`[Preload] Failed to load ${scale} boundary data:`, err)
+        return null
+      }
+    },
+    
     fetchBoundaryByScale(scale) {
-      http.get('map/gba_boundary', { params: { scale } })
-        .then(res => {
-          this.boundary = res.data
-          this.labelFeatures = this.buildLabelPoints(res.data, scale)
-          this.updateOverviewCounts(res.data)
-
-          if (this.mapLoaded) {
-            // 确保点位在边界之前渲染
-            if (this.allPointsData && !this.map.getLayer('all-points')) {
-              this.renderAllPoints()
-            }
-            this.renderBoundary()
+      console.log('[Fetch Boundary] Loading boundary data for scale:', scale)
+      
+      // Try to load from cache first
+      let boundaryData = this.loadBoundaryFromCache(scale)
+      
+      if (boundaryData) {
+        console.log('[Fetch Boundary] Using cached data for scale:', scale)
+        this.boundary = boundaryData
+        this.updateOverviewCounts(boundaryData)
+        
+        if (this.mapLoaded) {
+          console.log('[Fetch Boundary] Map is loaded, rendering boundary and labels')
+          if (this.allPointsData && !this.map.getLayer('all-points')) {
+            this.renderAllPoints()
           }
-        })
-        .catch(err => {
-          console.error('加载边界数据失败:', err)
-          this.labelFeatures = null
-        })
+          this.renderBoundary()
+        }
+      } else {
+        // Fallback: fetch from server if not cached
+        console.log('[Fetch Boundary] No cache found, fetching from server for scale:', scale)
+        http.get('map/gba_boundary', { params: { scale } })
+          .then(res => {
+            console.log('[Fetch Boundary] Boundary data received for scale:', scale, 'Features:', res.data?.features?.length)
+            this.boundary = res.data
+            this.saveBoundaryToCache(scale, res.data)
+            this.updateOverviewCounts(res.data)
+
+            if (this.mapLoaded) {
+              console.log('[Fetch Boundary] Map is loaded, rendering boundary and labels')
+              if (this.allPointsData && !this.map.getLayer('all-points')) {
+                this.renderAllPoints()
+              }
+              this.renderBoundary()
+            } else {
+              console.warn('[Fetch Boundary] Map not loaded yet, boundary will render when map loads')
+            }
+          })
+          .catch(err => {
+            console.error('加载边界数据失败:', err)
+          })
+      }
     },
     fetchMapData() {
       console.log('[Map Data] 开始加载地图数据...')
@@ -523,13 +610,24 @@ export default {
 
     renderBoundary() {
       if (!this.map || !this.boundary) return;
+      
+      // Remove highlight layer before recreating boundary layers
+      this.removeHighlightLayer();
+      
+      // Also hide tooltip
+      this.hoverTooltip.visible = false;
+      
       const sourceId = 'gba-boundary'
       const labelSourceId = 'gba-label-source'
       const removeIfExists = id => {
-        if (this.map.getLayer(id)) this.map.removeLayer(id)
+        if (this.map.getLayer(id)) {
+          this.map.removeLayer(id)
+          console.log(`[Render Boundary] Removed layer: ${id}`)
+        }
       }
 
       // 先删除所有使用该 source 的图层
+      console.log('[Render Boundary] Removing existing layers...')
       removeIfExists('gba-label')
       removeIfExists('gba-fill')
       removeIfExists('gba-line')
@@ -537,9 +635,11 @@ export default {
       // 再删除 source
         if (this.map.getSource(sourceId)) {
           this.map.removeSource(sourceId)
+          console.log('[Render Boundary] Removed source:', sourceId)
         }
       if (this.map.getSource(labelSourceId)) {
         this.map.removeSource(labelSourceId)
+        console.log('[Render Boundary] Removed source:', labelSourceId)
         }
 
       // 生成一个带统一标签字段的副本，保证不同数据源的名称属性能被 label layer 读取
@@ -567,11 +667,20 @@ export default {
 
         this.map.addSource(sourceId, {
           type: 'geojson',
-        data: boundaryData
+          data: boundaryData
       })
+      
+      // Regenerate label features based on current boundary data and scale
+      // This ensures labels are always up-to-date when switching layers
+      const currentLabelFeatures = this.buildLabelPoints(this.boundary, this.currentScale)
+      console.log('[Render Boundary] Regenerated label features for scale:', this.currentScale, 'Count:', currentLabelFeatures?.features?.length || 0)
+      
+      if (currentLabelFeatures?.features?.length > 0) {
+        console.log('[Render Boundary] Sample label feature:', currentLabelFeatures.features[0])
+      }
       this.map.addSource(labelSourceId, {
         type: 'geojson',
-        data: this.labelFeatures || { type: 'FeatureCollection', features: [] }
+        data: currentLabelFeatures || { type: 'FeatureCollection', features: [] }
         })
 
       // GBA面要素
@@ -607,31 +716,54 @@ export default {
         })
 
       // GBA Label
-      // 城市名称标注（基于属性：名称_nam）
+      // 城市名称标注（基于属性：labelName）
+      console.log('[Render Boundary] Adding label layer')
         this.map.addLayer({
         id: 'gba-label',
         type: 'symbol',
         source: labelSourceId,
+        minzoom: 0,  // Show at all zoom levels
+        maxzoom: 24,
         filter: ['any',
-          ['==', ['geometry-type'], 'Polygon'],
-          ['==', ['geometry-type'], 'MultiPolygon']
+          ['==', ['geometry-type'], 'Point']  // Label source contains Point features, not Polygon
         ],
         layout: {
           // 取我们预先生成的统一标签字段：labelName
-          'text-field': ['coalesce', ['get', 'labelName'], ''],
-          'text-font': ['DIN Pro Medium', 'Arial Unicode MS Regular'], // 该样式内可用字体
-          'text-size': 14,
-          'symbol-placement': 'point',   // 多边形内放置一个点标注
-          'text-allow-overlap': false,
-          'text-variable-anchor': ['center', 'top', 'bottom', 'left', 'right'],
-          'text-offset': [0, 0]
+          'text-field': ['get', 'labelName'],
+          'text-font': ['Noto Sans Regular', 'Arial Unicode MS Regular'],  // Fonts with Chinese support
+          'text-size': 18,  // Increased size
+          'symbol-placement': 'point',
+          'text-allow-overlap': true,
+          'text-ignore-placement': true,  // Force display
+          'text-anchor': 'center',
+          'visibility': 'visible'
         },
           paint: {
-          'text-color': '#E2E8F0',
-          'text-halo-color': 'rgba(2, 6, 23, 0.9)',
-          'text-halo-width': 1.2
+          'text-color': '#FFFFFF',  // White text
+          'text-halo-color': '#000000',  // Black halo
+          'text-halo-width': 2
           }
       });
+      
+      // Move label layer to top to ensure it's not covered by other layers
+      this.map.moveLayer('gba-label');
+      
+      console.log('[Render Boundary] Label layer added successfully');
+      
+      // Comprehensive debug checks
+      const labelLayer = this.map.getLayer('gba-label');
+      console.log('[Render Boundary] Label layer exists:', !!labelLayer);
+      console.log('[Render Boundary] Label layer type:', labelLayer?.type);
+      console.log('[Render Boundary] Label layer visibility:', this.map.getLayoutProperty('gba-label', 'visibility'));
+      console.log('[Render Boundary] Label layer text-field:', this.map.getLayoutProperty('gba-label', 'text-field'));
+      console.log('[Render Boundary] Label layer text-size:', this.map.getLayoutProperty('gba-label', 'text-size'));
+      console.log('[Render Boundary] Label layer text-color:', this.map.getPaintProperty('gba-label', 'text-color'));
+      
+      // Check source data
+      const labelSource = this.map.getSource(labelSourceId);
+      if (labelSource && labelSource._data) {
+        console.log('[Render Boundary] Label source data features:', labelSource._data.features?.length);
+      }
       const bbox = this.computeGeoJSONBounds(this.boundary)
       console.log('fitBounds bbox:', bbox)
       if (bbox) {
@@ -658,8 +790,21 @@ export default {
         console.log('[Layer Order] 点图层已移至顶层')
       }
       
+      // 使用 map idle 事件确保标签图层在所有渲染完成后移至最顶层
+      this.map.once('idle', () => {
+        if (this.map && this.map.getLayer('gba-label')) {
+          this.map.moveLayer('gba-label')
+          console.log('[Layer Order] 标签图层已移至最顶层 (idle事件触发)')
+        } else {
+          console.warn('[Layer Order] 标签图层不存在，无法移至顶层')
+        }
+      })
+      
       // 绑定点击事件
       this.bindIdentify()
+      
+      // 绑定悬浮提示事件
+      this.bindHoverTooltip()
     },
     computeGeoJSONBounds(geojson) {
       try {
@@ -1002,6 +1147,160 @@ export default {
       // 在定义回调后注册一次
       this.map.on('click', this._onMapClick);
     },
+
+    // Bind hover tooltip for city and district layers
+    bindHoverTooltip() {
+      if (!this.map) return;
+      
+      // Remove existing listeners to avoid duplicates
+      this.map.off('mousemove', this._onMapMouseMove);
+      this.map.off('mouseleave', this._onMapMouseLeave);
+
+      // Mouse move handler
+      this._onMapMouseMove = (e) => {
+        // Disable hover in location mode or 3D mode
+        if (this.currentMode === 'location' || this.is3DMode) {
+          this.hoverTooltip.visible = false;
+          // Remove highlight layer if exists
+          this.removeHighlightLayer();
+          return;
+        }
+
+        const px = e.point;
+        const tolerance = 5;
+        const bbox = [
+          [px.x - tolerance, px.y - tolerance],
+          [px.x + tolerance, px.y + tolerance]
+        ];
+
+        // Query boundary layers
+        const features = this.map.queryRenderedFeatures(bbox, { 
+          layers: ['gba-fill', 'gba-line'] 
+        });
+
+        if (features && features.length > 0) {
+          const feature = features[0];
+          const props = feature.properties;
+          
+          // Determine which field to use based on current mode
+          let displayName = '';
+          if (this.currentMode === 'city') {
+            // City level: use CityCN field
+            displayName = props.CityCN || props.citycn || props.CITYCN || 
+                         props.city_cn || props.City_CN || '';
+          } else if (this.currentMode === 'district') {
+            // District level: use DistrictCN field
+            displayName = props.DistrictCN || props.districtcn || props.DISTRICTCN || 
+                         props.district_cn || props.District_CN || '';
+          }
+
+          if (displayName) {
+            // Show tooltip
+            this.hoverTooltip.visible = true;
+            this.hoverTooltip.x = e.originalEvent.clientX + 10;
+            this.hoverTooltip.y = e.originalEvent.clientY + 10;
+            this.hoverTooltip.text = displayName;
+            
+            // Change cursor to pointer
+            this.map.getCanvas().style.cursor = 'pointer';
+
+            // Add highlight layer for this feature
+            this.addHighlightLayer(feature);
+          } else {
+            this.hoverTooltip.visible = false;
+            this.map.getCanvas().style.cursor = '';
+            this.removeHighlightLayer();
+          }
+        } else {
+          // No feature under cursor
+          this.hoverTooltip.visible = false;
+          this.map.getCanvas().style.cursor = '';
+          this.removeHighlightLayer();
+        }
+      };
+
+      // Mouse leave handler
+      this._onMapMouseLeave = () => {
+        this.hoverTooltip.visible = false;
+        this.map.getCanvas().style.cursor = '';
+        this.removeHighlightLayer();
+      };
+
+      // Register event listeners
+      this.map.on('mousemove', this._onMapMouseMove);
+      this.map.on('mouseleave', this._onMapMouseLeave);
+    },
+
+    // Add highlight layer for hovered feature
+    addHighlightLayer(feature) {
+      if (!this.map || !feature) return;
+      
+      const highlightLayerId = 'gba-highlight';
+      const highlightSourceId = 'gba-highlight-source';
+      
+      // Check if we need to update (different feature)
+      const currentSource = this.map.getSource(highlightSourceId);
+      if (currentSource) {
+        // Update existing source with new feature
+        currentSource.setData({
+          type: 'FeatureCollection',
+          features: [feature]
+        });
+      } else {
+        // Create new source and layers
+        this.map.addSource(highlightSourceId, {
+          type: 'geojson',
+          data: {
+            type: 'FeatureCollection',
+            features: [feature]
+          }
+        });
+        
+        // Add highlight fill layer
+        this.map.addLayer({
+          id: highlightLayerId + '-fill',
+          type: 'fill',
+          source: highlightSourceId,
+          paint: {
+            'fill-color': '#00f2ff',
+            'fill-opacity': 0.5
+          }
+        });
+        
+        // Add highlight line layer
+        this.map.addLayer({
+          id: highlightLayerId + '-line',
+          type: 'line',
+          source: highlightSourceId,
+          paint: {
+            'line-color': '#00f2ff',
+            'line-width': 3
+          }
+        });
+      }
+    },
+
+    // Remove highlight layer
+    removeHighlightLayer() {
+      if (!this.map) return;
+      
+      const highlightLayerId = 'gba-highlight';
+      const highlightSourceId = 'gba-highlight-source';
+      
+      // Remove layers
+      if (this.map.getLayer(highlightLayerId + '-fill')) {
+        this.map.removeLayer(highlightLayerId + '-fill');
+      }
+      if (this.map.getLayer(highlightLayerId + '-line')) {
+        this.map.removeLayer(highlightLayerId + '-line');
+      }
+      
+      // Remove source
+      if (this.map.getSource(highlightSourceId)) {
+        this.map.removeSource(highlightSourceId);
+      }
+    },
+    
     // 从要素提取边界坐标，统一返回为数组：Array<[number, number]>
     extractCoordinatesFromFeature(feature) {
       if (!feature) return [];
@@ -1042,19 +1341,25 @@ export default {
       return 'CityCN'
     },
     buildLabelPoints(geojson, scale) {
+      console.log('[Label Points] Building label points for scale:', scale)
       if (!geojson) {
+        console.warn('[Label Points] No geojson data provided')
         return { type: 'FeatureCollection', features: [] }
       }
       const features = geojson.type === 'FeatureCollection' ? geojson.features : [geojson]
       const labelField = this.getLabelFieldByScale(scale)
+      console.log('[Label Points] Using label field:', labelField, 'for', features.length, 'features')
       const grouped = new Map()
 
-      features.forEach(feature => {
+      features.forEach((feature, index) => {
         if (!feature || !feature.properties) return
         const geom = feature.geometry
         if (!geom || (geom.type !== 'Polygon' && geom.type !== 'MultiPolygon')) return
         const labelValue = feature.properties[labelField]
-        if (!labelValue) return
+        if (!labelValue) {
+          console.warn(`[Label Points] Feature ${index} missing ${labelField} field. Properties:`, Object.keys(feature.properties))
+          return
+        }
         const area = this.computeFeatureArea(geom)
         const existing = grouped.get(labelValue)
         if (!existing || area > existing.area) {
@@ -1062,10 +1367,35 @@ export default {
         }
       })
 
+      console.log('[Label Points] Grouped', grouped.size, 'unique labels')
       const labelFeatures = []
-      grouped.forEach(({ feature }) => {
+      
+      // Manual position adjustments for specific cities
+      const positionAdjustments = {
+        '佛山市': { offsetLng: 0.15, offsetLat: -0.08 },  // Move Foshan right and down
+        '珠海市': { offsetLng: -0.45, offsetLat: 0.05 },  // Move Zhuhai significantly left
+        '深圳市': { offsetLng: 0, offsetLat: -0.03 } 
+      }
+      
+      grouped.forEach(({ feature }, labelName) => {
         const centroid = this.computeFeatureCentroid(feature.geometry)
-        if (!centroid) return
+        if (!centroid) {
+          console.warn('[Label Points] Could not compute centroid for:', labelName)
+          return
+        }
+        
+        // Apply manual adjustments if defined
+        let adjustedCentroid = centroid
+        const cityName = feature.properties[this.getLabelFieldByScale(scale)]
+        if (positionAdjustments[cityName]) {
+          const adjustment = positionAdjustments[cityName]
+          adjustedCentroid = [
+            centroid[0] + (adjustment.offsetLng || 0),
+            centroid[1] + (adjustment.offsetLat || 0)
+          ]
+          console.log(`[Label Points] Adjusted ${cityName} position from`, centroid, 'to', adjustedCentroid)
+        }
+        
         labelFeatures.push({
           type: 'Feature',
           properties: {
@@ -1073,10 +1403,12 @@ export default {
           },
           geometry: {
             type: 'Point',
-            coordinates: centroid
+            coordinates: adjustedCentroid
           }
         })
+        console.log('[Label Points] Created label:', labelName, 'at', adjustedCentroid)
       })
+      console.log('[Label Points] Generated', labelFeatures.length, 'label features')
       return { type: 'FeatureCollection', features: labelFeatures }
     },
     computeFeatureArea(geometry) {
@@ -2120,6 +2452,37 @@ export default {
 
 #mb-map .mapboxgl-canvas-container.mapboxgl-interactive:active {
   cursor: default;
+}
+
+/* Hover Tooltip Styling */
+.map-hover-tooltip {
+  position: fixed;
+  padding: 8px 16px;
+  background: rgba(4, 16, 30, 0.95);
+  border: 1px solid rgba(0, 242, 255, 0.6);
+  border-radius: 6px;
+  color: #00f2ff;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 10000;
+  box-shadow: 0 4px 12px rgba(0, 242, 255, 0.3),
+              inset 0 0 10px rgba(0, 242, 255, 0.1);
+  text-shadow: 0 0 5px rgba(0, 242, 255, 0.5);
+  letter-spacing: 0.5px;
+  animation: tooltip-fade-in 0.2s ease-out;
+}
+
+@keyframes tooltip-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* 数据切换面板 */

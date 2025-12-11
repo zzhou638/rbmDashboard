@@ -269,7 +269,7 @@ export default {
     
     // 检查局域网端点是否可用
     checkLanEndpoint() {
-      const lanUrl = 'http://10.4.183.186:8000/api/agent'
+      const lanUrl = 'http://10.7.174.94:8000/api/agent'
       // 使用 HEAD 请求或 GET 请求来检测端点是否可用
       axios.get(lanUrl, { timeout: 2000 })
         .then(() => {
