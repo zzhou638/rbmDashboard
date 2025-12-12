@@ -93,7 +93,15 @@
                 </div>
                 <div class="chat-messages" ref="chatMessages">
                   <div v-for="(m, i) in chatMessages" :key="i" class="chat-message" :class="m.role">
-                    <div class="bubble" v-html="renderMarkdown(m.content)"></div>
+                    <div v-if="m.type === 'loading'" class="bubble loading-bubble">
+                      <div class="typing-indicator">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                      </div>
+                      <span class="chat-loading-text">AI 正在思考中...</span>
+                    </div>
+                    <div v-else class="bubble" v-html="renderMarkdown(m.content)"></div>
                   </div>
                 </div>
               </div>
@@ -301,7 +309,7 @@ export default {
       this.$nextTick(() => this.scrollChatToBottom())
 
       // 显示临时占位回复
-      const placeholder = { role: 'assistant', content: '正在思考中...' }
+      const placeholder = { role: 'assistant', type: 'loading', content: '正在思考中...' }
       this.chatMessages.push(placeholder)
       this.$nextTick(() => this.scrollChatToBottom())
 
@@ -1904,5 +1912,57 @@ export default {
   color: #4CC9F0;
   font-weight: 500;
   letter-spacing: 2px;
+}
+
+/* 聊天框加载动画 */
+.loading-bubble {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px !important;
+}
+
+.chat-loading-text {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.8);
+  animation: pulse-text 1.5s infinite ease-in-out;
+}
+
+.typing-indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.typing-indicator span {
+  width: 6px;
+  height: 6px;
+  background: #66ddff;
+  border-radius: 50%;
+  animation: bounce 1.4s infinite ease-in-out both;
+}
+
+.typing-indicator span:nth-child(1) {
+  animation-delay: -0.32s;
+}
+
+.typing-indicator span:nth-child(2) {
+  animation-delay: -0.16s;
+}
+
+@keyframes bounce {
+  0%, 80%, 100% { 
+    transform: scale(0);
+    opacity: 0.5;
+  }
+  40% { 
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes pulse-text {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
 }
 </style>
