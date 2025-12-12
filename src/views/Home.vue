@@ -269,12 +269,17 @@ export default {
     
     // 检查局域网端点是否可用
     checkLanEndpoint() {
-      const lanUrl = 'http://10.7.0.1:8000/api/agent'
-      // 使用 HEAD 请求或 GET 请求来检测端点是否可用
-      axios.post(lanUrl, { query: '' }, { timeout: 2000 })
-        .then(() => {
-          console.log('[Chatbox] LAN endpoint is available')
-          this.useLanEndpoint = true
+      const testUrl = 'http://10.7.0.1:8000/api/test'
+      // 使用测试接口检测端点是否可用
+      axios.get(testUrl, { timeout: 2000 })
+        .then((res) => {
+          if (res.data === true) {
+            console.log('[Chatbox] LAN endpoint is available')
+            this.useLanEndpoint = true
+          } else {
+            console.log('[Chatbox] LAN endpoint test failed')
+            this.useLanEndpoint = false
+          }
         })
         .catch(() => {
           console.log('[Chatbox] LAN endpoint is NOT available, falling back to API')
