@@ -365,7 +365,10 @@ export default {
     async handleStreamRequest(payload, placeholder) {
       // 直接连接到后端服务器，绕过 webpack dev server 代理
       // 这样可以避免代理的超时限制
-      const backendUrl = 'http://localhost:8085' // 或者使用 http.defaults.baseURL 去掉 /api 前缀
+      // 开发环境使用 localhost，生产环境使用线上 API
+      const backendUrl = process.env.NODE_ENV === 'development'
+        ? 'http://localhost:8085'
+        : 'https://api.zhougis.app'
       const url = `${backendUrl}/api/agent/stream`
       
       console.log('[Stream] Using direct backend connection (bypassing proxy):', url)
