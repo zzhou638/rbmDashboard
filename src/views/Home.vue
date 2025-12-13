@@ -99,7 +99,7 @@
                         <span></span>
                         <span></span>
                       </div>
-                      <span class="chat-loading-text">AI 正在思考中...</span>
+                      <span class="chat-loading-text">{{ m.content }}</span>
                     </div>
                     <div v-else class="bubble" v-html="renderMarkdown(m.content)"></div>
                   </div>
@@ -313,65 +313,307 @@ export default {
       this.chatMessages.push(placeholder)
       this.$nextTick(() => this.scrollChatToBottom())
 
-      // 根据端点可用性选择请求地址和参数
-      let requestPromise
-      if (this.useLanEndpoint) {
-        // 使用局域网端点，只传递 query 参数
-        console.log('[Chatbox] Using LAN endpoint')
-        requestPromise = axios.post('http://10.7.0.1:8000/api/agent', { query: text }, { timeout: 300000 })
-      } else {
-        // 使用 API 端点，支持多轮对话
-        console.log('[Chatbox] Using API endpoint with history')
-        // 构建历史记录（排除当前用户消息和占位符）
-        const history = this.chatMessages
-          .filter(m => m !== userMsg && m !== placeholder)
-          .map(m => ({ role: m.role, content: m.content }))
-        
-        // 只有在有历史记录时才传递 history 参数
-        const payload = { message: text }
-        if (history.length > 0) {
-          payload.history = history
-        }
-        
-        // 使用配置的 http 客户端，它会自动添加正确的 baseURL
-        requestPromise = http.post('agent/chat', payload, { timeout: 300000 })
+      // 准备请求参数
+      // 构建历史记录（排除当前用户消息和占位符）
+      const history = this.chatMessages
+        .filter(m => m !== userMsg && m !== placeholder)
+        .map(m => ({ role: m.role, content: m.content }))
+      
+      const payload = { message: text }
+      if (history.length > 0) {
+        payload.history = history
       }
 
-      requestPromise
-        .then(res => {
-          // 移除占位回复并推入真实回复
-          const idx = this.chatMessages.indexOf(placeholder)
-          if (idx !== -1) this.chatMessages.splice(idx, 1)
+      // 1. 优先尝试局域网端点
+      if (this.useLanEndpoint) {
+        console.log('[Chatbox] Using LAN endpoint')
+        axios.post('http://10.7.0.1:8000/api/agent', { query: text }, { timeout: 300000 })
+          .then(res => this.handleNonStreamResponse(res, placeholder))
+          .catch(err => this.handleError(err, placeholder))
+        return
+      }
 
-          let replyText = ''
-          const payload = res?.data
-          if (!payload) {
-            replyText = 'AI Agent 未返回内容。'
-          } else if (typeof payload === 'string') {
-            replyText = payload
-          } else if (payload.answer) {
-            replyText = payload.answer
-          } else if (payload.reply) {
-            replyText = payload.reply
-          } else if (payload.data && (payload.data.answer || payload.data.reply)) {
-            replyText = payload.data.answer || payload.data.reply
-          } else if (payload.message) {
-            replyText = payload.message
+      // 2. 尝试外部 API (流式优先)
+      console.log('[Chatbox] Using External API endpoint')
+      // 先检查是否支持流式
+      http.get('agent/capabilities/streaming')
+        .then(async (capRes) => {
+          if (capRes.data && capRes.data.streaming_supported) {
+            // 支持流式，使用 fetch 请求流式接口
+            try {
+              console.log('[Chatbox] Streaming supported, starting stream...')
+              await this.handleStreamRequest(payload, placeholder)
+            } catch (streamErr) {
+              console.warn('[Chatbox] Stream request failed, falling back to legacy:', streamErr)
+              // 流式请求本身失败（网络等原因），尝试回退到传统接口
+              this.fallbackToLegacy(payload, placeholder)
+            }
           } else {
-            replyText = JSON.stringify(payload)
+            // 不支持流式，回退
+            console.log('[Chatbox] Streaming NOT supported, using legacy.')
+            this.fallbackToLegacy(payload, placeholder)
+          }
+        })
+        .catch((e) => {
+          // 检查接口失败，回退
+          console.warn('[Chatbox] Capabilities check failed, using legacy:', e)
+          this.fallbackToLegacy(payload, placeholder)
+        })
+    },
+
+    // 处理流式请求
+    async handleStreamRequest(payload, placeholder) {
+      // 直接连接到后端服务器，绕过 webpack dev server 代理
+      // 这样可以避免代理的超时限制
+      const backendUrl = 'http://localhost:8085' // 或者使用 http.defaults.baseURL 去掉 /api 前缀
+      const url = `${backendUrl}/api/agent/stream`
+      
+      console.log('[Stream] Using direct backend connection (bypassing proxy):', url)
+      
+      // 创建 AbortController 用于超时控制
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => {
+        console.warn('[Stream] Request timeout after 10 minutes')
+        controller.abort()
+      }, 600000) // 10 分钟超时
+      
+      try {
+        console.log('[Stream] Starting fetch request to:', url)
+        
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(payload),
+          credentials: 'include',
+          signal: controller.signal // 添加 abort signal
+        })
+
+        if (!response.ok) {
+          throw new Error(`Stream HTTP error: ${response.status}`)
+        }
+
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+        const streamState = { isFirstChunk: true }
+        let chunkCount = 0
+        const startTime = Date.now()
+
+        console.log('[Stream] Starting to read stream at:', new Date().toISOString())
+
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const readStartTime = Date.now()
+          const { done, value } = await reader.read()
+          const readDuration = Date.now() - readStartTime
+          
+          if (done) {
+            const duration = ((Date.now() - startTime) / 1000).toFixed(2)
+            console.log(`[Stream] ✓ Stream reading completed. Duration: ${duration}s, Chunks: ${chunkCount}`)
+            console.log(`[Stream] Connection closed at: ${new Date().toISOString()}`)
+            
+            // 处理 buffer 中剩余的数据
+            if (buffer.trim()) {
+              console.log('[Stream] Processing remaining buffer:', buffer)
+              const trimmedLine = buffer.trim()
+              
+              if (trimmedLine.startsWith('data: ')) {
+                const jsonStr = trimmedLine.substring(6)
+                try {
+                  const data = JSON.parse(jsonStr)
+                  console.log('[Stream] Parsed final data:', data)
+                  this.processStreamMessage(data, placeholder, streamState)
+                } catch (e) {
+                  console.error('[Stream] JSON parse error in final buffer:', e)
+                }
+              }
+            }
+            
+            break
+          }
+          
+          chunkCount++
+          const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2)
+          console.log(`[Stream] Chunk ${chunkCount} received at ${elapsedTime}s (read took ${readDuration}ms)`)
+          
+          buffer += decoder.decode(value, { stream: true })
+          
+          console.log(`[Stream] Chunk ${chunkCount}: buffer length = ${buffer.length}`)
+          
+          // SSE format: each message is "data: {json}\n"
+          // Split by newlines and process each line
+          const lines = buffer.split('\n')
+          
+          console.log(`[Stream] Split into ${lines.length} lines`)
+          
+          // Keep the last incomplete line in the buffer
+          buffer = lines.pop() || ''
+          
+          console.log(`[Stream] Remaining buffer: "${buffer.substring(0, 50)}${buffer.length > 50 ? '...' : ''}"`)
+          
+          let shouldBreak = false
+          
+          for (const line of lines) {
+            const trimmedLine = line.trim()
+            
+            if (!trimmedLine) {
+              continue // Skip empty lines
+            }
+            
+            console.log(`[Stream] Processing line (${trimmedLine.length} chars): ${trimmedLine.substring(0, 80)}${trimmedLine.length > 80 ? '...' : ''}`)
+            
+            // Check if line starts with "data: "
+            if (trimmedLine.startsWith('data: ')) {
+              const jsonStr = trimmedLine.substring(6) // Remove "data: " prefix
+              
+              try {
+                const data = JSON.parse(jsonStr)
+                const isDone = this.processStreamMessage(data, placeholder, streamState)
+                if (isDone) {
+                  shouldBreak = true
+                  break // 收到 done 信号，退出内层循环
+                }
+              } catch (e) {
+                console.error('[Stream] ❌ JSON parse error:', e.message)
+                console.error('[Stream] Failed JSON string:', jsonStr)
+                console.error('[Stream] Line was:', trimmedLine)
+              }
+            } else {
+              console.warn('[Stream] ⚠️  Line does not start with "data: ":', trimmedLine.substring(0, 100))
+            }
+          }
+          
+          // 如果收到 done 信号，退出外层循环
+          if (shouldBreak) {
+            console.log('[Stream] Breaking out of read loop due to done signal')
+            break
           }
 
-          this.chatMessages.push({ role: 'assistant', content: replyText })
-          this.$nextTick(() => this.scrollChatToBottom())
-        })
-        .catch(err => {
-          const idx = this.chatMessages.indexOf(placeholder)
-          if (idx !== -1) this.chatMessages.splice(idx, 1)
-          const errMsg = err?.response?.data?.error || err.message || '请求 AI Agent 失败'
-          this.chatMessages.push({ role: 'assistant', content: `错误：${errMsg}` })
-          this.$nextTick(() => this.scrollChatToBottom())
-          console.error('[AI Agent] 请求失败:', err)
-        })
+        }
+      } catch (error) {
+        console.error('[Stream] Stream reading error:', error)
+        
+        // 如果是 AbortError，说明是超时
+        if (error.name === 'AbortError') {
+          placeholder.type = 'error'
+          placeholder.content = '请求超时，请重试'
+        } else {
+          // 其他错误，重新抛出让外层处理
+          throw error
+        }
+      } finally {
+        // 清除超时定时器
+        clearTimeout(timeoutId)
+      }
+    },
+
+    findJsonBoundary(buffer) {
+      let depth = 0
+      let inString = false
+      let escaped = false
+      
+      for (let i = 0; i < buffer.length; i++) {
+        const char = buffer[i]
+        
+        if (escaped) {
+          escaped = false
+          continue
+        }
+        
+        if (char === '\\') {
+          escaped = true
+          continue
+        }
+        
+        if (char === '"') {
+          inString = !inString
+          continue
+        }
+        
+        if (!inString) {
+          if (char === '{') depth++
+          if (char === '}') {
+            depth--
+            if (depth === 0) return i
+          }
+        }
+      }
+      return -1
+    },
+
+    processStreamMessage(data, placeholder, streamState) {
+      // data: { type: 'status' | 'chunk' | 'intent' | 'sql' | 'done', content: string }
+      
+      if (data.type === 'done') {
+        // 流式输出完成信号
+        console.log('[Stream] ✓ Stream completed')
+        streamState.isDone = true
+        return true // 返回 true 表示应该结束流读取
+      } else if (data.type === 'status') {
+        // 更新 loading 提示文案
+        placeholder.content = data.content // 此时 type 仍为 loading
+        this.$forceUpdate() 
+      } else if (data.type === 'chunk') {
+        if (streamState.isFirstChunk) {
+          // 收到第一个 chunk，将消息转换为正式消息
+          console.log('[Stream] → Starting content output')
+          placeholder.type = 'text' // 移除 loading 样式
+          placeholder.content = ''
+          streamState.isFirstChunk = false
+        }
+        placeholder.content += data.content
+        // 强制滚动到底部
+        this.$nextTick(() => this.scrollChatToBottom())
+      } else {
+        // 其他类型的消息（如 intent, sql）也作为状态显示
+        if (placeholder.type === 'loading') {
+          placeholder.content = data.content
+          this.$forceUpdate()
+        }
+      }
+      
+      return false // 返回 false 表示继续读取
+    },
+
+    fallbackToLegacy(payload, placeholder) {
+      // 传统的非流式接口 /api/agent
+      http.post('agent', payload, { timeout: 300000 })
+        .then(res => this.handleNonStreamResponse(res, placeholder))
+        .catch(err => this.handleError(err, placeholder))
+    },
+
+    handleNonStreamResponse(res, placeholder) {
+      let replyText = ''
+      const payload = res?.data
+      if (!payload) {
+        replyText = 'AI Agent 未返回内容。'
+      } else if (typeof payload === 'string') {
+        replyText = payload
+      } else if (payload.answer) {
+        replyText = payload.answer
+      } else if (payload.reply) {
+        replyText = payload.reply
+      } else if (payload.data && (payload.data.answer || payload.data.reply)) {
+        replyText = payload.data.answer || payload.data.reply
+      } else if (payload.message) {
+        replyText = payload.message
+      } else {
+        replyText = JSON.stringify(payload)
+      }
+
+      placeholder.type = 'text'
+      placeholder.content = replyText
+      this.$nextTick(() => this.scrollChatToBottom())
+    },
+
+    handleError(err, placeholder) {
+      const errMsg = err?.response?.data?.error || err.message || '请求 AI Agent 失败'
+      placeholder.type = 'error' 
+      placeholder.content = `错误：${errMsg}`
+      this.$nextTick(() => this.scrollChatToBottom())
+      console.error('[AI Agent] 请求失败:', err)
     },
     scrollChatToBottom() {
       const box = this.$refs.chatMessages
