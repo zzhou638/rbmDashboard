@@ -167,8 +167,8 @@ import CarbonEmissionBar from '@/components/CarbonEmissionBar.vue'
 import AverageTemperatureLine from '@/components/AverageTemperatureLine.vue'
 import EsgReportCard from '@/components/EsgReportCard.vue'
 import GreenFinanceInvestimentTrend from '@/components/GreenFinanceInvestimentTrend.vue'
-import axios from 'axios'
-import { http } from '@/api/api.js'
+// import axios from 'axios'
+// import { http } from '@/api/api.js'
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
 export default {
@@ -298,7 +298,7 @@ export default {
         })
     },
     
-    onSendChat() {
+    async onSendChat() {
       if (!this.chatInput || !this.chatInput.trim()) return
       const text = this.chatInput.trim()
       const userMsg = { role: 'user', content: text }
@@ -324,52 +324,24 @@ export default {
         payload.history = history
       }
 
-      // 1. 优先尝试局域网端点
-      if (this.useLanEndpoint) {
-        console.log('[Chatbox] Using LAN endpoint')
-        axios.post('http://10.7.0.1:8000/api/agent', { query: text }, { timeout: 300000 })
-          .then(res => this.handleNonStreamResponse(res, placeholder))
-          .catch(err => this.handleError(err, placeholder))
-        return
+      // 直接使用流式接口
+      console.log('[Chatbox] Using streaming API endpoint')
+      try {
+        await this.handleStreamRequest(payload, placeholder)
+      } catch (streamErr) {
+        console.error('[Chatbox] Stream request failed:', streamErr)
+        this.handleError(streamErr, placeholder)
       }
-
-      // 2. 尝试外部 API (流式优先)
-      console.log('[Chatbox] Using External API endpoint')
-      // 先检查是否支持流式
-      http.get('agent/capabilities/streaming')
-        .then(async (capRes) => {
-          if (capRes.data && capRes.data.streaming_supported) {
-            // 支持流式，使用 fetch 请求流式接口
-            try {
-              console.log('[Chatbox] Streaming supported, starting stream...')
-              await this.handleStreamRequest(payload, placeholder)
-            } catch (streamErr) {
-              console.warn('[Chatbox] Stream request failed, falling back to legacy:', streamErr)
-              // 流式请求本身失败（网络等原因），尝试回退到传统接口
-              this.fallbackToLegacy(payload, placeholder)
-            }
-          } else {
-            // 不支持流式，回退
-            console.log('[Chatbox] Streaming NOT supported, using legacy.')
-            this.fallbackToLegacy(payload, placeholder)
-          }
-        })
-        .catch((e) => {
-          // 检查接口失败，回退
-          console.warn('[Chatbox] Capabilities check failed, using legacy:', e)
-          this.fallbackToLegacy(payload, placeholder)
-        })
     },
 
     // 处理流式请求
     async handleStreamRequest(payload, placeholder) {
       // 直接连接到后端服务器，绕过 webpack dev server 代理
       // 这样可以避免代理的超时限制
-      // 开发环境使用 localhost，生产环境使用线上 API
-      const backendUrl = process.env.NODE_ENV === 'development'
-        ? 'http://localhost:8085'
-        : 'https://api.zhougis.app'
-      const url = `${backendUrl}/api/agent/stream`
+      // 使用当前初始化的 baseHost (api.js 中探测到的可用主机)
+      // Agent 服务已集成到统一后端，直接使用相同的 baseHost
+      const { baseHost } = await import('@/api/api')
+      const url = `${baseHost}/api/agent/stream`
       
       console.log('[Stream] Using direct backend connection (bypassing proxy):', url)
       
@@ -578,37 +550,6 @@ export default {
       }
       
       return false // 返回 false 表示继续读取
-    },
-
-    fallbackToLegacy(payload, placeholder) {
-      // 传统的非流式接口 /api/agent
-      http.post('agent', payload, { timeout: 300000 })
-        .then(res => this.handleNonStreamResponse(res, placeholder))
-        .catch(err => this.handleError(err, placeholder))
-    },
-
-    handleNonStreamResponse(res, placeholder) {
-      let replyText = ''
-      const payload = res?.data
-      if (!payload) {
-        replyText = 'AI Agent 未返回内容。'
-      } else if (typeof payload === 'string') {
-        replyText = payload
-      } else if (payload.answer) {
-        replyText = payload.answer
-      } else if (payload.reply) {
-        replyText = payload.reply
-      } else if (payload.data && (payload.data.answer || payload.data.reply)) {
-        replyText = payload.data.answer || payload.data.reply
-      } else if (payload.message) {
-        replyText = payload.message
-      } else {
-        replyText = JSON.stringify(payload)
-      }
-
-      placeholder.type = 'text'
-      placeholder.content = replyText
-      this.$nextTick(() => this.scrollChatToBottom())
     },
 
     handleError(err, placeholder) {
